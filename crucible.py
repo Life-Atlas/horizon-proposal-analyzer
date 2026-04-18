@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 """
-C.R.U.C.I.B.L.E.
+C.R.U.C.I.B.L.E. v3.0.0
 Consortia Review Under Controlled Interrogation — Before Live Evaluation
 
-A SMILE-methodology-driven proposal analyzer for Horizon Europe.
+Two-pass full-proposal analyzer for Horizon Europe.
 
-Three-layer evaluation architecture:
-  Layer 1: CALL ALIGNMENT  — Is the proposal a slave to what the call requires?
-  Layer 2: FIELD AWARENESS  — Does it know the seminal work AND where the field is heading?
-  Layer 3: ANTI-PATTERNS    — The 40+ mechanical checks that catch sloppy writing
-
-Built on the S.M.I.L.E. methodology (Sustainable Methodology for Impact Lifecycle Enablement):
-  Impact first, data last. Outcome → Action → Insight → Information → Data.
+Pass 1: EXTRACTION — build a structured ProposalModel from the entire PDF
+Pass 2: ANALYSIS — four layers
+  Layer 1: STRUCTURAL INTEGRITY  — cross-document consistency
+  Layer 2: CALL ALIGNMENT        — proposal vs call requirements
+  Layer 3: FIELD & SMILE         — field awareness + SMILE methodology
+  Layer 4: ANTI-PATTERNS         — 45+ mechanical checks
 
 Usage:
+  python crucible.py proposal.pdf
   python crucible.py proposal.pdf --call call_text.txt
   python crucible.py proposal.pdf --call call_text.txt --verbose
   python crucible.py proposal.pdf --call call_text.txt --json results.json
+  python crucible.py proposal.pdf --budget
 
 License: MIT — WINNIIO AB / Life Atlas
 """
@@ -26,7 +27,7 @@ import re
 import json
 import argparse
 from pathlib import Path
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -36,11 +37,147 @@ except ImportError:
     print("ERROR: pymupdf required. Install with: pip install pymupdf")
     sys.exit(1)
 
-__version__ = "2.0.0"
+__version__ = "3.0.0"
 
 # ============================================================
 # DATA STRUCTURES
 # ============================================================
+
+@dataclass
+class Partner:
+    name: str = ""
+    pic: str = ""
+    country: str = ""
+    is_sme: bool = False
+    total_eligible: float = 0.0
+    eu_contribution: float = 0.0
+    person_months: float = 0.0
+    personnel_cost: float = 0.0
+
+
+@dataclass
+class Researcher:
+    name: str = ""
+    gender: str = ""
+    partner: str = ""
+    role: str = ""
+
+
+@dataclass
+class WorkPackage:
+    number: int = 0
+    title: str = ""
+    lead: str = ""
+    start_month: int = 0
+    end_month: int = 0
+    person_months: float = 0.0
+
+
+@dataclass
+class Task:
+    id: str = ""
+    title: str = ""
+    lead: str = ""
+    start_month: int = 0
+    end_month: int = 0
+    wp_number: int = 0
+
+
+@dataclass
+class Deliverable:
+    id: str = ""
+    title: str = ""
+    lead: str = ""
+    month: int = 0
+    dtype: str = ""
+    wp_number: int = 0
+
+
+@dataclass
+class Milestone:
+    id: str = ""
+    title: str = ""
+    lead: str = ""
+    month: int = 0
+    verification: str = ""
+
+
+@dataclass
+class RiskEntry:
+    description: str = ""
+    likelihood: str = ""
+    severity: str = ""
+    mitigation: str = ""
+    category: str = ""
+
+
+@dataclass
+class ProposalModel:
+    # Admin / Part A
+    acronym: str = ""
+    title: str = ""
+    duration_months: int = 0
+    call_id: str = ""
+    topic: str = ""
+    action_type: str = ""          # RIA, IA, CSA, etc.
+
+    partners: list = field(default_factory=list)          # list[Partner]
+    researchers: list = field(default_factory=list)       # list[Researcher]
+
+    # Part B structure
+    abstract_text: str = ""
+    sections_detected: list = field(default_factory=list) # list[str]
+    work_packages: list = field(default_factory=list)     # list[WorkPackage]
+    tasks: list = field(default_factory=list)             # list[Task]
+    deliverables: list = field(default_factory=list)      # list[Deliverable]
+    milestones: list = field(default_factory=list)        # list[Milestone]
+    risks: list = field(default_factory=list)             # list[RiskEntry]
+
+    kpis_found: list = field(default_factory=list)        # list[str]
+    citations_found: list = field(default_factory=list)   # list[tuple(author,year)]
+    acronyms_used: set = field(default_factory=set)
+    acronyms_defined: set = field(default_factory=set)
+
+    # Budget
+    budget_total: float = 0.0
+    budget_eu: float = 0.0
+    subcontracting_total: float = 0.0
+    equipment_total: float = 0.0
+    travel_total: float = 0.0
+    indirect_total: float = 0.0
+    personnel_total: float = 0.0
+
+    # Ethics
+    ethics_issues_flagged: list = field(default_factory=list)
+
+    # Raw text stores for analysis
+    full_text: str = ""
+    part_b_text: str = ""
+    part_b_start_page: int = 1
+    total_pages: int = 0
+
+    def summary(self) -> str:
+        lines = [
+            f"PROPOSAL MODEL",
+            f"  Acronym:       {self.acronym or '(not detected)'}",
+            f"  Title:         {self.title[:80] or '(not detected)'}",
+            f"  Duration:      {self.duration_months}m",
+            f"  Call ID:       {self.call_id or '(not detected)'}",
+            f"  Action type:   {self.action_type or '(not detected)'}",
+            f"  Partners:      {len(self.partners)}",
+            f"  Researchers:   {len(self.researchers)}",
+            f"  Work packages: {len(self.work_packages)}",
+            f"  Tasks:         {len(self.tasks)}",
+            f"  Deliverables:  {len(self.deliverables)}",
+            f"  Milestones:    {len(self.milestones)}",
+            f"  Risks:         {len(self.risks)}",
+            f"  KPIs:          {len(self.kpis_found)}",
+            f"  Citations:     {len(self.citations_found)}",
+            f"  Budget total:  EUR {self.budget_total:,.0f}",
+            f"  EU contrib:    EUR {self.budget_eu:,.0f}",
+        ]
+        return "\n".join(lines)
+
 
 @dataclass
 class Finding:
@@ -49,20 +186,20 @@ class Finding:
     page: int
     text: str
     suggestion: str
-    category: str = ""   # Call Alignment, Field Awareness, SMILE, Anti-Pattern
-    layer: int = 3       # 1=Call, 2=Field, 3=Anti-Pattern
+    category: str = ""
+    layer: int = 4
 
 
 @dataclass
 class AnalysisResult:
     findings: list = field(default_factory=list)
 
-    def add(self, pattern, severity, page, text, suggestion, category="", layer=3):
+    def add(self, pattern, severity, page, text, suggestion, category="", layer=4):
         self.findings.append(Finding(pattern, severity, page, text, suggestion, category, layer))
 
 
 # ============================================================
-# PDF & CALL TEXT EXTRACTION
+# PASS 1: EXTRACTION
 # ============================================================
 
 def extract_text(pdf_path: str) -> tuple[dict, int]:
@@ -71,6 +208,16 @@ def extract_text(pdf_path: str) -> tuple[dict, int]:
     for i in range(len(doc)):
         pages[i + 1] = doc[i].get_text()
     return pages, len(doc)
+
+
+def is_admin_page(text: str) -> bool:
+    indicators = [
+        'Administrative forms', 'Participant Registry',
+        'PIC\n', 'Legal name\n', 'SME Data', 'Gender Equality Plan',
+        'Departments carrying out', 'Main contact person',
+        'This proposal version was submitted by',
+    ]
+    return sum(1 for i in indicators if i in text) >= 2
 
 
 def find_part_b_start(pages: dict) -> int:
@@ -86,14 +233,8 @@ def find_part_b_start(pages: dict) -> int:
     return 1
 
 
-def is_admin_page(text: str) -> bool:
-    indicators = [
-        'Administrative forms', 'Participant Registry',
-        'PIC\n', 'Legal name\n', 'SME Data', 'Gender Equality Plan',
-        'Departments carrying out', 'Main contact person',
-        'This proposal version was submitted by',
-    ]
-    return sum(1 for i in indicators if i in text) >= 2
+def get_full_text(pages: dict) -> str:
+    return " ".join(t for _, t in sorted(pages.items()))
 
 
 def get_part_b_text(pages: dict, start: int) -> str:
@@ -101,14 +242,312 @@ def get_part_b_text(pages: dict, start: int) -> str:
 
 
 def load_call_text(call_path: str) -> str:
-    return Path(call_path).read_text(encoding='utf-8')
-
-
-def extract_call_from_pdf(call_path: str) -> str:
     if call_path.lower().endswith('.pdf'):
         doc = fitz.open(call_path)
         return " ".join(doc[i].get_text() for i in range(len(doc)))
-    return load_call_text(call_path)
+    return Path(call_path).read_text(encoding='utf-8')
+
+
+def _parse_money(s: str) -> float:
+    """Parse a money string like '1,234,567.89' or '1.234.567' -> float."""
+    s = s.replace(',', '').replace(' ', '')
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
+
+
+def extract_proposal_model(pages: dict, page_count: int) -> ProposalModel:
+    model = ProposalModel()
+    model.total_pages = page_count
+    model.part_b_start_page = find_part_b_start(pages)
+    model.full_text = get_full_text(pages)
+    model.part_b_text = get_part_b_text(pages, model.part_b_start_page)
+
+    full = model.full_text
+    lower = full.lower()
+
+    # --- Acronym / title ---
+    m = re.search(r'(?:Acronym|Short name)[:\s]+([A-Z][A-Z0-9\-]{1,20})', full)
+    if m:
+        model.acronym = m.group(1).strip()
+
+    m = re.search(r'(?:Full title|Project title|Title of the proposal)[:\s]+([^\n]{10,150})', full)
+    if m:
+        model.title = m.group(1).strip()
+
+    # --- Duration ---
+    m = re.search(r'Duration[:\s]+(\d{2,3})\s*(?:months?|M)', full, re.IGNORECASE)
+    if m:
+        model.duration_months = int(m.group(1))
+    if not model.duration_months:
+        m = re.search(r'(\d{2,3})\s*months?\s*(?:project|duration)', lower)
+        if m:
+            model.duration_months = int(m.group(1))
+
+    # --- Call ID ---
+    m = re.search(r'(HORIZON[-\s][A-Z0-9\-]{5,40})', full)
+    if m:
+        model.call_id = m.group(1).strip()
+
+    # --- Topic ---
+    m = re.search(r'(?:Topic[:\s]+|topic identifier[:\s]+)([A-Z0-9\-\.]{5,40})', full, re.IGNORECASE)
+    if m:
+        model.topic = m.group(1).strip()
+
+    # --- Action type ---
+    for at in ['Research and Innovation Action', 'Innovation Action',
+               'Coordination and Support Action', 'Marie Sklodowska-Curie',
+               'ERC', 'RIA', 'IA', 'CSA']:
+        if at in full:
+            model.action_type = at
+            break
+
+    # --- Partners ---
+    partner_blocks = re.findall(
+        r'PIC[:\s]+(\d{9})[^\n]*\n([^\n]{5,80})',
+        full
+    )
+    seen_pics = set()
+    for pic, name in partner_blocks:
+        if pic not in seen_pics:
+            seen_pics.add(pic)
+            p = Partner(name=name.strip(), pic=pic)
+            country_m = re.search(r'\b([A-Z]{2})\b', name)
+            if country_m:
+                p.country = country_m.group(1)
+            if re.search(r'\bSME\b', name, re.IGNORECASE):
+                p.is_sme = True
+            model.partners.append(p)
+
+    # Fallback: look for participant table rows
+    if not model.partners:
+        participant_rows = re.findall(
+            r'([A-Z][A-Z &\-]{3,50})\s{2,}([A-Z]{2})\s{2,}([A-Z\-]+)\s{2,}(\d{9})',
+            full
+        )
+        seen_pics = set()
+        for name, country, role, pic in participant_rows:
+            if pic not in seen_pics:
+                seen_pics.add(pic)
+                p = Partner(name=name.strip(), pic=pic, country=country)
+                model.partners.append(p)
+
+    # --- Person months per partner ---
+    pm_rows = re.findall(
+        r'([A-Z][A-Z0-9\-]{1,15})\s+(\d+(?:\.\d+)?)\s+(?:PM|person[\s-]months?)',
+        full, re.IGNORECASE
+    )
+    pm_lookup = {r[0].upper(): float(r[1]) for r in pm_rows}
+    for p in model.partners:
+        key = p.name[:10].upper().strip()
+        if key in pm_lookup:
+            p.person_months = pm_lookup[key]
+
+    # --- Researchers ---
+    researcher_rows = re.findall(
+        r'([A-Z][a-z]+ [A-Z][a-z]+(?:\s[A-Z][a-z]+)?)\s+([MF]|Male|Female|Other)\s+(\w+)',
+        full
+    )
+    for name, gender, role in researcher_rows[:30]:
+        model.researchers.append(Researcher(name=name, gender=gender[0].upper(), role=role))
+
+    # --- Abstract ---
+    m = re.search(
+        r'Abstract[:\s]*\n(.*?)(?=\n(?:Section|1\.|Excellence|Objectives|Keywords))',
+        full, re.DOTALL | re.IGNORECASE
+    )
+    if m:
+        model.abstract_text = m.group(1).strip()[:3000]
+
+    # --- Sections detected ---
+    section_patterns = [
+        r'^((?:Section\s+)?\d+(?:\.\d+)?\s+[A-Z][^\n]{5,80})$',
+        r'^(\d\.\s+[A-Z][^\n]{5,60})$',
+    ]
+    for pat in section_patterns:
+        for line in full.split('\n'):
+            if re.match(pat, line.strip()):
+                model.sections_detected.append(line.strip())
+    model.sections_detected = list(dict.fromkeys(model.sections_detected))[:60]
+
+    # --- Work Packages ---
+    wp_patterns = [
+        r'WP\s*(\d+)\s*[:\-–]?\s*([^\n]{5,80})\s+(?:Lead|Leader)[:\s]+([A-Z][A-Z\-]{1,20})\s+M(\d+)\s*[-–]\s*M?(\d+)',
+        r'Work [Pp]ackage\s+(\d+)[:\s]+([^\n]{5,80})\n.*?([A-Z]{2,15})\s+(\d+)\s+(\d+)',
+    ]
+    seen_wps = set()
+    for pat in wp_patterns:
+        for m in re.finditer(pat, full, re.DOTALL):
+            num = int(m.group(1))
+            if num in seen_wps:
+                continue
+            seen_wps.add(num)
+            wp = WorkPackage(
+                number=num,
+                title=m.group(2).strip(),
+                lead=m.group(3).strip() if len(m.groups()) >= 3 else "",
+                start_month=int(m.group(4)) if len(m.groups()) >= 4 else 0,
+                end_month=int(m.group(5)) if len(m.groups()) >= 5 else 0,
+            )
+            model.work_packages.append(wp)
+
+    # Simpler WP detection fallback
+    if not model.work_packages:
+        for m in re.finditer(r'WP\s*(\d+)[:\s–\-]+([^\n]{5,80})', full):
+            num = int(m.group(1))
+            if num not in seen_wps:
+                seen_wps.add(num)
+                model.work_packages.append(WorkPackage(number=num, title=m.group(2).strip()))
+    model.work_packages.sort(key=lambda x: x.number)
+
+    # --- Tasks ---
+    for m in re.finditer(
+        r'T(\d+)\.(\d+)[:\s–\-]+([^\n]{5,100})(?:.*?Lead[:\s]+([A-Z][A-Z\-]{1,15}))?',
+        full, re.DOTALL
+    ):
+        task = Task(
+            id=f"T{m.group(1)}.{m.group(2)}",
+            title=m.group(3).strip()[:100],
+            wp_number=int(m.group(1)),
+            lead=m.group(4).strip() if m.group(4) else "",
+        )
+        start_m = re.search(r'M(\d+)\s*[-–]\s*M?(\d+)', m.group(0))
+        if start_m:
+            task.start_month = int(start_m.group(1))
+            task.end_month = int(start_m.group(2))
+        model.tasks.append(task)
+
+    # --- Deliverables ---
+    for m in re.finditer(
+        r'D(\d+)\.(\d+)[:\s–\-]+([^\n]{5,120})',
+        full
+    ):
+        d = Deliverable(
+            id=f"D{m.group(1)}.{m.group(2)}",
+            title=m.group(3).strip()[:120],
+            wp_number=int(m.group(1)),
+        )
+        # Try to find month
+        month_m = re.search(r'[Mm](\d+)\b', m.group(0)[len(m.group(0))//2:])
+        if month_m:
+            d.month = int(month_m.group(1))
+        model.deliverables.append(d)
+
+    # --- Milestones ---
+    for m in re.finditer(
+        r'MS\s*(\d+)[:\s–\-]+([^\n]{5,120})',
+        full
+    ):
+        ms = Milestone(
+            id=f"MS{m.group(1)}",
+            title=m.group(2).strip()[:120],
+        )
+        month_m = re.search(r'[Mm](\d+)\b', m.group(0))
+        if month_m:
+            ms.month = int(month_m.group(1))
+        model.milestones.append(ms)
+
+    # --- Risks ---
+    risk_rows = re.findall(
+        r'([^\n]{10,120})\s+(High|Medium|Low)\s+(High|Medium|Low)\s+([^\n]{10,200})',
+        full, re.IGNORECASE
+    )
+    for desc, likelihood, severity, mitigation in risk_rows[:20]:
+        model.risks.append(RiskEntry(
+            description=desc.strip(),
+            likelihood=likelihood.capitalize(),
+            severity=severity.capitalize(),
+            mitigation=mitigation.strip(),
+        ))
+
+    # --- KPIs ---
+    kpi_patterns = [
+        r'(?:KPI|Key Performance Indicator)[:\s]+([^\n]{10,120})',
+        r'(?:target|achieve|reduce|increase)\s+(?:by\s+)?(\d+\s*%[^\n]{0,80})',
+        r'(?:>=?|≥|<=?|≤)\s*\d+\s*%[^\n]{0,60}',
+    ]
+    for pat in kpi_patterns:
+        for m in re.finditer(pat, full, re.IGNORECASE):
+            model.kpis_found.append(m.group(0)[:120])
+    model.kpis_found = list(dict.fromkeys(model.kpis_found))[:30]
+
+    # --- Citations ---
+    cit_patterns = [
+        r'\(([A-Z][a-zA-Z\-]+(?:\s+et\s+al\.?)?\s*,?\s*(\d{4}))\)',
+        r'\[(\d{4})\]',
+    ]
+    for pat in cit_patterns:
+        for m in re.finditer(pat, full):
+            year_m = re.search(r'(\d{4})', m.group(1) if len(m.groups()) >= 1 else m.group(0))
+            if year_m:
+                yr = int(year_m.group(1))
+                if 1980 <= yr <= 2027:
+                    model.citations_found.append((m.group(1), yr))
+    model.citations_found = list(dict.fromkeys(model.citations_found))[:200]
+
+    # --- Acronyms used vs defined ---
+    model.acronyms_used = set(re.findall(r'\b([A-Z]{3,6})\b', full))
+    defined = re.findall(r'\(([A-Z]{3,6})\)', full)
+    defined += re.findall(r'([A-Z]{3,6})\s*[-–:]\s+[A-Z][a-z]', full)
+    model.acronyms_defined = set(defined)
+
+    # --- Budget ---
+    budget_patterns = [
+        r'Total\s+eligible\s+costs?[:\s]+([\d,\.]+)',
+        r'Total\s+budget[:\s]+([\d,\.]+)',
+        r'Grand\s+total[:\s]+([\d,\.]+)',
+    ]
+    for pat in budget_patterns:
+        m = re.search(pat, full, re.IGNORECASE)
+        if m:
+            val = _parse_money(m.group(1))
+            if val > 100000:
+                model.budget_total = val
+                break
+
+    eu_patterns = [
+        r'(?:EU\s+contribution|EC\s+contribution|Requested\s+EU)[:\s]+([\d,\.]+)',
+        r'(?:Total\s+EU|Union\s+contribution)[:\s]+([\d,\.]+)',
+    ]
+    for pat in eu_patterns:
+        m = re.search(pat, full, re.IGNORECASE)
+        if m:
+            val = _parse_money(m.group(1))
+            if val > 100000:
+                model.budget_eu = val
+                break
+
+    sub_m = re.search(r'[Ss]ubcontracting[:\s]+([\d,\.]+)', full)
+    if sub_m:
+        model.subcontracting_total = _parse_money(sub_m.group(1))
+
+    eq_m = re.search(r'[Ee]quipment[:\s]+([\d,\.]+)', full)
+    if eq_m:
+        model.equipment_total = _parse_money(eq_m.group(1))
+
+    tr_m = re.search(r'[Tt]ravel[:\s]+([\d,\.]+)', full)
+    if tr_m:
+        model.travel_total = _parse_money(tr_m.group(1))
+
+    ind_m = re.search(r'[Ii]ndirect\s+costs?[:\s]+([\d,\.]+)', full)
+    if ind_m:
+        model.indirect_total = _parse_money(ind_m.group(1))
+
+    pers_m = re.search(r'[Pp]ersonnel\s+costs?[:\s]+([\d,\.]+)', full)
+    if pers_m:
+        model.personnel_total = _parse_money(pers_m.group(1))
+
+    # --- Ethics ---
+    ethics_section = re.search(
+        r'[Ee]thics\s+(?:self[\s-]?assessment|issues?|review)[:\s]*(.*?)(?=\n\n|\nSection|\n\d\.)',
+        full, re.DOTALL
+    )
+    if ethics_section:
+        flags = re.findall(r'(?:Yes|No)\s*[-–:]\s*([^\n]{10,120})', ethics_section.group(1))
+        model.ethics_issues_flagged = [f.strip() for f in flags[:10]]
+
+    return model
 
 
 # ============================================================
@@ -125,6 +564,11 @@ SMILE_PHASES = {
             "operating context", "sociotechnological", "actor-network",
             "pesteled", "pestle", "5 whys", "root cause",
         ],
+        "structural_checks": [
+            "stakeholder table", "stakeholder matrix",
+            "spatial scope", "temporal scope",
+            "system boundary", "context diagram",
+        ],
         "what_to_check": "Does the proposal define the reality it operates in? Stakeholders, boundaries, spatial-temporal context?",
     },
     "concurrent_engineering": {
@@ -134,6 +578,10 @@ SMILE_PHASES = {
             "minimal viable", "mvp", "mvt", "as-is", "to-be",
             "hypothesis", "validate", "simulation", "scenario",
             "virtual first", "prototype", "proof of concept",
+        ],
+        "structural_checks": [
+            "validation methodology", "test plan", "acceptance criteria",
+            "verification and validation", "proof of concept",
         ],
         "what_to_check": "Does the proposal define what 'good enough' looks like before scaling? Is there a validation step?",
     },
@@ -145,7 +593,11 @@ SMILE_PHASES = {
             "data model", "schema", "metadata", "standards",
             "integration", "connected", "iot",
         ],
-        "what_to_check": "Does the proposal show how digital connects to physical? Are ontologies/standards defined?",
+        "structural_checks": [
+            "iso ", "iec ", "ieee ", "w3c", "oasis", "etsi",
+            "ifc", "owl", "rdf", "json-ld", "saref",
+        ],
+        "what_to_check": "Are specific standards/ontologies NAMED (not just mentioned)?",
     },
     "contextual_intelligence": {
         "name": "Contextual Intelligence",
@@ -155,7 +607,11 @@ SMILE_PHASES = {
             "analytics", "root cause", "decision support",
             "dashboard", "monitoring", "alert",
         ],
-        "what_to_check": "Does the proposal move beyond data collection to contextual decision-making?",
+        "structural_checks": [
+            "decision support system", "dashboard specification",
+            "alert threshold", "notification", "report format",
+        ],
+        "what_to_check": "Are specific decision support outputs defined (not just 'a dashboard')?",
     },
     "continuous_intelligence": {
         "name": "Continuous Intelligence",
@@ -165,7 +621,11 @@ SMILE_PHASES = {
             "machine learning", "model training", "feedback loop",
             "continuous", "autonomous", "self-improving",
         ],
-        "what_to_check": "Does the proposal show how the system improves over time? Is there an AI maturity path?",
+        "structural_checks": [
+            "ai maturity", "model update", "retraining",
+            "mlops", "drift detection", "model versioning",
+        ],
+        "what_to_check": "Is there an AI maturity path described (not just 'we will use ML')?",
     },
     "perpetual_wisdom": {
         "name": "Perpetual Wisdom",
@@ -175,7 +635,12 @@ SMILE_PHASES = {
             "transferability", "sustainability", "circular",
             "planetary", "global", "share impact",
         ],
-        "what_to_check": "Does the proposal show how results outlive the project? Open source? Standards? Ecosystem?",
+        "structural_checks": [
+            "open source repository", "github", "gitlab",
+            "sustainability plan", "replication guide",
+            "open access", "creative commons",
+        ],
+        "what_to_check": "Is there a concrete open-source/sustainability/replication plan?",
     },
 }
 
@@ -194,81 +659,352 @@ SMILE_PERSPECTIVES = {
     },
 }
 
-IMPACT_SEQUENCE = ["outcome", "action", "insight", "information", "data"]
+# Country -> rough personnel cost per PM (EUR)
+COUNTRY_PM_BENCHMARKS = {
+    "SE": (7000, 9000), "NO": (8000, 10000), "DK": (7000, 9000), "FI": (7000, 9000),
+    "DE": (6500, 8500), "AT": (6000, 8000), "NL": (6500, 8500), "BE": (6000, 8000),
+    "FR": (6000, 8000), "CH": (8000, 11000), "IE": (6000, 8000),
+    "IT": (4000, 6000), "ES": (4000, 6000), "PT": (3500, 5500), "GR": (3000, 5000),
+    "PL": (3000, 5000), "CZ": (3000, 5000), "RO": (2500, 4500), "HU": (3000, 5000),
+    "UA": (2000, 4000), "RS": (2500, 4000),
+}
 
 
 # ============================================================
-# LAYER 1: CALL ALIGNMENT CHECKS
+# LAYER 1: STRUCTURAL INTEGRITY
 # ============================================================
 
-def check_call_alignment(pages, result, part_b_start, call_text):
-    """The proposal must be a slave to what the call requires."""
+def check_structural_integrity(model: ProposalModel, result: AnalysisResult):
+    """Cross-document consistency checks."""
+    cat = "Structural Integrity"
+    layer = 1
+
+    # --- Partner count: ≥3 from ≥3 different EU/Associated countries ---
+    if model.partners:
+        countries = set(p.country for p in model.partners if p.country)
+        if len(model.partners) < 3:
+            result.add("Consortium Too Small", "CRITICAL", 0,
+                f"Only {len(model.partners)} partners detected. Minimum is 3 for most HE actions.",
+                "Horizon Europe RIA/IA requires ≥3 independent legal entities from ≥3 eligible countries.",
+                cat, layer)
+        elif len(countries) < 3:
+            result.add("Country Diversity Insufficient", "CRITICAL", 0,
+                f"Partners from only {len(countries)} distinct countries: {', '.join(sorted(countries))}",
+                "Must have ≥3 different EU member states or associated countries.",
+                cat, layer)
+    else:
+        result.add("Partners Not Detected", "HIGH", 0,
+            "Could not extract partner list from the document.",
+            "Ensure Part A administrative forms are included in the submitted PDF.",
+            cat, layer)
+
+    # --- WP start/end months within project duration ---
+    if model.duration_months > 0:
+        for wp in model.work_packages:
+            if wp.end_month > model.duration_months:
+                result.add("WP Exceeds Duration", "HIGH", 0,
+                    f"WP{wp.number} ends M{wp.end_month} but project is {model.duration_months}m",
+                    "All WP end months must fall within the project duration.",
+                    cat, layer)
+            if wp.start_month > wp.end_month and wp.end_month > 0:
+                result.add("WP Invalid Dates", "HIGH", 0,
+                    f"WP{wp.number} starts M{wp.start_month} but ends M{wp.end_month}",
+                    "WP start month cannot exceed end month.",
+                    cat, layer)
+
+    # --- Every deliverable ID mentioned in WP descriptions should be in deliverable table ---
+    full = model.part_b_text
+    del_ids_in_text = set(re.findall(r'\bD(\d+\.\d+)\b', full))
+    del_ids_in_table = set(d.id.replace('D', '') for d in model.deliverables)
+    orphan_dels = del_ids_in_text - del_ids_in_table
+    if len(orphan_dels) > 2:
+        sample = ', '.join(f"D{x}" for x in sorted(orphan_dels)[:5])
+        result.add("Orphaned Deliverable References", "HIGH", 0,
+            f"Deliverables referenced in text but not in deliverable table: {sample}",
+            "Every deliverable mentioned in WP descriptions must appear in the deliverable table.",
+            cat, layer)
+
+    # --- Milestone quality: meeting milestones ---
+    bad_ms_words = ['meeting', 'workshop', 'kickoff', 'kick-off', 'conference',
+                    'review meeting', 'webinar', 'seminar']
+    for ms in model.milestones:
+        title_lower = ms.title.lower()
+        if any(w in title_lower for w in bad_ms_words):
+            result.add("Meeting Milestone", "HIGH", 0,
+                f"Milestone '{ms.id}: {ms.title[:70]}' is a calendar event, not a verifiable achievement.",
+                "Milestones must be concrete, independently verifiable outputs (reports, datasets, prototypes).",
+                cat, layer)
+            break
+
+    # --- No partner has zero PMs but leads tasks ---
+    if model.tasks and model.partners:
+        task_leads = Counter(t.lead for t in model.tasks if t.lead)
+        partner_pms = {p.name[:12].upper(): p.person_months for p in model.partners}
+        for lead, count in task_leads.items():
+            # Try to match partner name
+            for pname, pms in partner_pms.items():
+                if lead.upper()[:8] in pname or pname[:8] in lead.upper()[:8]:
+                    if pms == 0.0 and count >= 2:
+                        result.add("Zero-PM Task Lead", "CRITICAL", 0,
+                            f"{lead} leads {count} tasks but has 0 PMs in partner table.",
+                            "Cannot lead tasks with no effort allocated — fix PM table.",
+                            cat, layer)
+
+    # --- Personnel cost per PM vs country benchmarks ---
+    for p in model.partners:
+        if p.person_months > 0 and p.personnel_cost > 0 and p.country:
+            cost_per_pm = p.personnel_cost / p.person_months
+            benchmark = COUNTRY_PM_BENCHMARKS.get(p.country)
+            if benchmark:
+                lo, hi = benchmark
+                if cost_per_pm < lo * 0.5:
+                    result.add("Suspiciously Low Personnel Cost", "MEDIUM", 0,
+                        f"{p.name}: EUR {cost_per_pm:,.0f}/PM vs benchmark EUR {lo:,}-{hi:,} for {p.country}",
+                        "Cost per PM is far below country benchmark — reviewers will question this.",
+                        cat, layer)
+                elif cost_per_pm > hi * 1.5:
+                    result.add("Suspiciously High Personnel Cost", "MEDIUM", 0,
+                        f"{p.name}: EUR {cost_per_pm:,.0f}/PM vs benchmark EUR {lo:,}-{hi:,} for {p.country}",
+                        "Cost per PM is far above country benchmark — may be challenged in negotiation.",
+                        cat, layer)
+
+    # --- Subcontracting ratio ---
+    if model.budget_total > 0 and model.subcontracting_total > 0:
+        sub_pct = model.subcontracting_total / model.budget_total * 100
+        if sub_pct > 30:
+            result.add("High Subcontracting Ratio", "HIGH", 0,
+                f"Subcontracting is {sub_pct:.1f}% of total budget (>{30}% threshold).",
+                "Justify subcontracting explicitly; reviewers scrutinise this. Consider adding subcontractor as partner.",
+                cat, layer)
+
+    # --- Equipment cost ratio ---
+    if model.personnel_total > 0 and model.equipment_total > 0:
+        eq_pct = model.equipment_total / model.personnel_total * 100
+        if eq_pct > 15:
+            result.add("High Equipment Ratio", "MEDIUM", 0,
+                f"Equipment is {eq_pct:.1f}% of personnel costs (>{15}% is unusual).",
+                "Justify major equipment purchases; ensure they cannot be substituted by existing infrastructure.",
+                cat, layer)
+
+    # --- Management WP effort check ---
+    if model.work_packages:
+        mgmt_wps = [wp for wp in model.work_packages
+                    if wp.number == 1 or 'management' in wp.title.lower()]
+        total_pm_in_wps = sum(wp.person_months for wp in model.work_packages if wp.person_months > 0)
+        if mgmt_wps and total_pm_in_wps > 0:
+            mgmt_pm = sum(wp.person_months for wp in mgmt_wps)
+            pct = mgmt_pm / total_pm_in_wps * 100
+            if pct > 12:
+                result.add("Heavy Management WP", "MEDIUM", 0,
+                    f"Management WP is {pct:.0f}% of total WP effort (typical: 5-10%).",
+                    "Keep management WP to 5-10% of total effort.",
+                    cat, layer)
+            elif pct < 3 and len(model.partners) >= 5:
+                result.add("Under-Resourced Management", "LOW", 0,
+                    f"Management WP is only {pct:.0f}% with {len(model.partners)} partners.",
+                    "Complex consortia need ≥5% management effort.",
+                    cat, layer)
+
+    # --- Abstract keyword overlap with Part B ---
+    if model.abstract_text:
+        abstract_words = set(w.lower() for w in re.findall(r'\b[a-zA-Z]{5,}\b', model.abstract_text))
+        part_b_words = set(w.lower() for w in re.findall(r'\b[a-zA-Z]{5,}\b', model.part_b_text))
+        if abstract_words:
+            overlap_pct = len(abstract_words & part_b_words) / len(abstract_words) * 100
+            if overlap_pct < 40:
+                result.add("Abstract-Body Disconnect", "MEDIUM", 0,
+                    f"Only {overlap_pct:.0f}% of abstract keywords appear in Part B.",
+                    "Abstract should summarise what is in the proposal — reviewers read it first.",
+                    cat, layer)
+
+        # Abstract quality: length
+        abs_len = len(model.abstract_text)
+        if abs_len < 800:
+            result.add("Abstract Too Short", "MEDIUM", 0,
+                f"Abstract is {abs_len} chars (ideal: 1500-2000 chars for a strong summary).",
+                "Expand abstract to cover problem / solution / consortium / expected impact.",
+                cat, layer)
+        elif abs_len > 2500:
+            result.add("Abstract Too Long", "LOW", 0,
+                f"Abstract is {abs_len} chars (limit is usually 2000 chars in submission system).",
+                "Check character limit in the submission system — truncation is automatic.",
+                cat, layer)
+
+        # Problem/solution/impact structure
+        ab_lower = model.abstract_text.lower()
+        has_problem = any(w in ab_lower for w in ['challenge', 'problem', 'gap', 'limitation', 'barrier'])
+        has_solution = any(w in ab_lower for w in ['will develop', 'will create', 'will deliver', 'aims to', 'proposes'])
+        has_impact = any(w in ab_lower for w in ['impact', 'benefit', 'outcome', 'society', 'market'])
+        missing = []
+        if not has_problem: missing.append('problem statement')
+        if not has_solution: missing.append('solution description')
+        if not has_impact: missing.append('impact claim')
+        if missing:
+            result.add("Abstract Structure Weak", "LOW", 0,
+                f"Abstract appears to be missing: {', '.join(missing)}.",
+                "Strong abstracts follow: Problem → Solution → Consortium → Impact.",
+                cat, layer)
+
+    # --- Gender balance in named researchers ---
+    if len(model.researchers) >= 3:
+        genders = Counter(r.gender for r in model.researchers if r.gender in ('M', 'F'))
+        total_g = sum(genders.values())
+        if total_g >= 3:
+            male_pct = genders.get('M', 0) / total_g * 100
+            if male_pct > 80:
+                result.add("Gender Imbalance", "MEDIUM", 0,
+                    f"Named researchers: {genders.get('M',0)} male, {genders.get('F',0)} female ({male_pct:.0f}% male).",
+                    "HE expects gender balance in teams. ERC/MSCA additionally require GEP.",
+                    cat, layer)
+
+    # --- Ethics self-assessment completeness ---
+    if not model.ethics_issues_flagged:
+        result.add("Ethics Self-Assessment Not Detected", "LOW", 0,
+            "Could not find ethics self-assessment flags in Part A.",
+            "Ensure ethics self-assessment form is complete; incomplete forms trigger Agency review.",
+            cat, layer)
+
+    # --- Page count ---
+    part_b_page_count = sum(
+        1 for n, t in {}.items()  # filled below
+    )
+    # Use a simpler heuristic from model
+    expected_limit = 40
+    if 'csa' in model.action_type.lower() if model.action_type else False:
+        expected_limit = 25
+    if model.total_pages > 0:
+        # Rough: admin pages are roughly 30% of doc
+        estimated_part_b = int(model.total_pages * 0.65)
+        if estimated_part_b > expected_limit + 5:
+            result.add("Page Limit Risk", "HIGH", 0,
+                f"Document is {model.total_pages} pages total; Part B estimated ~{estimated_part_b} pages "
+                f"(limit is {expected_limit} for {model.action_type or 'RIA/IA'}).",
+                "Pages beyond the limit are cut by the submission system — evaluators never see them.",
+                cat, layer)
+
+    # --- Action type vs TRL consistency ---
+    if model.action_type:
+        at_lower = model.action_type.lower()
+        trl_nums = [int(x) for x in re.findall(r'TRL\s*(\d)', model.part_b_text, re.IGNORECASE)]
+        if 'innovation action' in at_lower and trl_nums:
+            low_trls = [t for t in trl_nums if t < 4]
+            if low_trls:
+                result.add("IA + Low TRL Mismatch", "HIGH", 0,
+                    f"Innovation Action targets TRL {sorted(set(low_trls))} — IAs should start at TRL 4+.",
+                    "Innovation Actions target TRL 5-8. Move basic research to an RIA.",
+                    cat, layer)
+        if 'research and innovation' in at_lower and trl_nums:
+            high_trls = [t for t in trl_nums if t >= 8]
+            if len(high_trls) > len(trl_nums) * 0.6:
+                result.add("RIA + High TRL Mismatch", "MEDIUM", 0,
+                    f"Research & Innovation Action mostly targets TRL 8-9 — consider submitting as IA.",
+                    "RIAs target TRL 1-6. Activities at TRL 7-9 belong in an Innovation Action.",
+                    cat, layer)
+
+    # --- Industry PM ratio check for IA ---
+    if model.action_type and 'innovation' in model.action_type.lower():
+        industry_pms = sum(p.person_months for p in model.partners
+                          if not any(kw in p.name.lower() for kw in ['university', 'institute', 'centre', 'research']))
+        total_pms = sum(p.person_months for p in model.partners if p.person_months > 0)
+        if total_pms > 0:
+            industry_ratio = industry_pms / total_pms * 100
+            if industry_ratio < 30:
+                result.add("Low Industry Ratio for IA", "MEDIUM", 0,
+                    f"Innovation Action has only {industry_ratio:.0f}% industry PMs.",
+                    "IAs are expected to be industry-driven. Reviewers expect ≥40-50% industry effort.",
+                    cat, layer)
+
+
+# ============================================================
+# LAYER 2: CALL ALIGNMENT
+# ============================================================
+
+def extract_key_phrases(text: str) -> list:
+    stop = {'the', 'a', 'an', 'of', 'to', 'in', 'for', 'and', 'or', 'is', 'are',
+            'be', 'with', 'that', 'this', 'by', 'on', 'at', 'as', 'from', 'it',
+            'will', 'should', 'must', 'shall', 'their', 'they', 'have', 'has',
+            'been', 'were', 'was', 'which', 'such', 'these', 'those', 'can',
+            'also', 'may', 'not', 'but', 'into', 'its', 'all', 'more', 'new',
+            'between', 'through', 'including', 'both', 'each', 'other', 'about'}
+    words = re.findall(r'\b[a-z][\w-]+\b', text)
+    bigrams = []
+    for i in range(len(words) - 1):
+        if (words[i] not in stop and words[i+1] not in stop
+                and len(words[i]) > 3 and len(words[i+1]) > 3):
+            bigrams.append(f"{words[i]} {words[i+1]}")
+    return list(set(bigrams))[:20]
+
+
+def extract_domain_keywords(text: str) -> set:
+    stop = {'the', 'a', 'an', 'of', 'to', 'in', 'for', 'and', 'or', 'is', 'are',
+            'be', 'with', 'that', 'this', 'by', 'on', 'at', 'as', 'from', 'will',
+            'should', 'must', 'shall', 'their', 'they', 'have', 'has', 'been',
+            'were', 'was', 'which', 'such', 'these', 'those', 'can', 'also',
+            'may', 'not', 'but', 'into', 'its', 'all', 'more', 'new', 'project',
+            'proposal', 'work', 'programme', 'horizon', 'europe', 'call', 'topic',
+            'action', 'grant', 'consortium', 'partner', 'result', 'activity',
+            'expected', 'outcome', 'impact', 'scope', 'objective', 'deliverable'}
+    words = set(re.findall(r'\b[a-z][\w-]{4,}\b', text))
+    return words - stop
+
+
+def check_call_alignment(model: ProposalModel, result: AnalysisResult, call_text: Optional[str]):
+    cat = "Call Alignment"
+    layer = 2
+
     if not call_text:
-        result.add(
-            "No Call Text Provided", "HIGH", 0,
-            "Cannot verify call alignment without the call text",
-            "Provide --call <file> with the work programme topic text",
-            "Call Alignment", 1
-        )
+        result.add("No Call Text Provided", "HIGH", 0,
+            "Cannot verify call alignment without the call text.",
+            "Provide --call <file> with the work programme topic text.",
+            cat, layer)
         return
 
-    proposal_text = get_part_b_text(pages, part_b_start).lower()
+    proposal_text = model.part_b_text.lower()
     call_lower = call_text.lower()
 
-    # Extract expected outcomes from call
+    # --- Expected outcomes extraction ---
     expected_outcomes = re.findall(
         r'expected outcome[s]?\s*[:\-]\s*(.*?)(?=\n\n|\nscope|\nexpected|$)',
         call_lower, re.DOTALL
     )
-
-    # Extract scope requirements
-    scope_sections = re.findall(
-        r'scope[:\-]\s*(.*?)(?=\n\n|\nexpected|\ndestination|$)',
-        call_lower, re.DOTALL
-    )
-
-    # Extract specific requirements/deliverables mentioned in call
-    call_requirements = []
-    requirement_patterns = [
-        r'(?:should|must|shall|are expected to)\s+(.*?)(?:\.|;)',
-        r'proposals\s+(?:should|must|shall)\s+(.*?)(?:\.|;)',
-        r'(?:develop|create|deliver|demonstrate|validate|establish)\s+(.*?)(?:\.|;)',
-    ]
-    for pattern in requirement_patterns:
-        matches = re.findall(pattern, call_lower)
-        call_requirements.extend(matches)
-
-    # Check: does the proposal address each expected outcome?
     if expected_outcomes:
         outcome_text = ' '.join(expected_outcomes)
         key_phrases = extract_key_phrases(outcome_text)
-        missing = []
-        for phrase in key_phrases:
-            if phrase not in proposal_text:
-                missing.append(phrase)
+        missing = [p for p in key_phrases if p not in proposal_text]
         if missing:
             sample = ', '.join(missing[:5])
-            result.add(
-                "Call Outcome Gap", "CRITICAL", 0,
-                f"Call expected outcomes mention concepts not found in proposal: {sample}",
-                "Map every expected outcome to a specific WP/task/deliverable",
-                "Call Alignment", 1
-            )
+            result.add("Call Outcome Gap", "CRITICAL", 0,
+                f"Call expected outcomes mention concepts not in proposal: {sample}",
+                "Map every expected outcome bullet to a specific WP/task/deliverable.",
+                cat, layer)
 
-    # Check: does the proposal use call-specific terminology?
+        # NEW: every expected outcome bullet -> at least one deliverable
+        outcome_bullets = re.findall(r'[-•]\s*(.+?)(?=\n[-•]|\n\n|$)', outcome_text)
+        deliverable_titles = ' '.join(d.title.lower() for d in model.deliverables)
+        unmapped_bullets = []
+        for bullet in outcome_bullets[:10]:
+            words = [w for w in bullet.lower().split() if len(w) > 5][:3]
+            if words and not any(w in deliverable_titles for w in words):
+                unmapped_bullets.append(bullet[:60])
+        if len(unmapped_bullets) >= 2:
+            result.add("Outcomes Without Deliverables", "HIGH", 0,
+                f"{len(unmapped_bullets)} expected outcome bullets have no matching deliverable: "
+                f"e.g. '{unmapped_bullets[0]}'",
+                "Trace each expected outcome to ≥1 deliverable ID in the deliverable table.",
+                cat, layer)
+
+    # --- Terminology gap ---
     call_keywords = extract_domain_keywords(call_lower)
     proposal_keywords = extract_domain_keywords(proposal_text)
     call_only = call_keywords - proposal_keywords
     if len(call_only) > 5:
         sample = ', '.join(sorted(call_only)[:8])
-        result.add(
-            "Call Terminology Gap", "HIGH", 0,
+        result.add("Call Terminology Gap", "HIGH", 0,
             f"Call uses {len(call_only)} domain terms not in proposal: {sample}",
-            "Mirror the call's language — evaluators match your text to call requirements",
-            "Call Alignment", 1
-        )
+            "Mirror the call's language — evaluators match your text to call requirements.",
+            cat, layer)
 
-    # Check: is the proposal paraphrasing the work programme instead of translating?
+    # --- WP parroting ---
     call_sentences = [s.strip() for s in call_lower.split('.') if len(s.strip()) > 40]
     verbatim_count = 0
     for sent in call_sentences[:30]:
@@ -278,40 +1014,31 @@ def check_call_alignment(pages, result, part_b_start, call_text):
             if phrase in proposal_text:
                 verbatim_count += 1
     if verbatim_count > 3:
-        result.add(
-            "Work Programme Parrot", "MEDIUM", 0,
-            f"{verbatim_count} call sentences appear verbatim in proposal",
-            "Translate the WP into YOUR project's context — don't parrot it",
-            "Call Alignment", 1
-        )
+        result.add("Work Programme Parrot", "MEDIUM", 0,
+            f"{verbatim_count} call sentences appear verbatim in proposal.",
+            "Translate the WP into YOUR project's context — don't parrot it.",
+            cat, layer)
 
-    # Check: TRL alignment
+    # --- TRL alignment ---
     call_trl = re.findall(r'TRL\s*(\d)', call_lower)
     proposal_trl = re.findall(r'TRL\s*(\d)', proposal_text)
     if call_trl and proposal_trl:
-        call_trl_set = set(call_trl)
-        proposal_trl_set = set(proposal_trl)
-        if not call_trl_set & proposal_trl_set:
-            result.add(
-                "TRL Mismatch", "CRITICAL", 0,
-                f"Call mentions TRL {','.join(sorted(call_trl_set))}, proposal mentions TRL {','.join(sorted(proposal_trl_set))}",
-                "Align your TRL targets with what the call specifies",
-                "Call Alignment", 1
-            )
+        if not set(call_trl) & set(proposal_trl):
+            result.add("TRL Mismatch", "CRITICAL", 0,
+                f"Call TRL {','.join(sorted(set(call_trl)))} vs proposal TRL {','.join(sorted(set(proposal_trl)))}.",
+                "Align your TRL targets with what the call specifies.",
+                cat, layer)
 
-    # Check: action type alignment (RIA vs IA)
+    # --- Action type alignment ---
     if 'innovation action' in call_lower or 'horizon-ia' in call_lower:
-        if 'trl' in proposal_text:
-            low_trl = re.findall(r'TRL\s*[12]', proposal_text, re.IGNORECASE)
-            if low_trl:
-                result.add(
-                    "Action Type Mismatch", "HIGH", 0,
-                    f"Innovation Action call but proposal targets TRL 1-2 (basic research)",
-                    "IAs target TRL 5-7+. Adjust scope or submit as RIA",
-                    "Call Alignment", 1
-                )
+        low_trl = re.findall(r'TRL\s*[12]', proposal_text, re.IGNORECASE)
+        if low_trl:
+            result.add("Action Type Mismatch", "HIGH", 0,
+                "Innovation Action call but proposal targets TRL 1-2 (basic research).",
+                "IAs target TRL 5-7+. Adjust scope or submit as RIA.",
+                cat, layer)
 
-    # Check: EU policy alignment
+    # --- EU policy alignment ---
     eu_policies = {
         'green deal': 'European Green Deal',
         'digital decade': 'Digital Decade',
@@ -326,199 +1053,152 @@ def check_call_alignment(pages, result, part_b_start, call_text):
     if call_policies:
         missing_policies = [p for p in call_policies if p.lower() not in proposal_text]
         if missing_policies:
-            result.add(
-                "Policy Alignment Gap", "MEDIUM", 0,
-                f"Call references {', '.join(call_policies)} but proposal misses: {', '.join(missing_policies)}",
-                "Reference the same EU policies the call mentions — evaluators check for this",
-                "Call Alignment", 1
-            )
-
-
-def extract_key_phrases(text):
-    stop = {'the', 'a', 'an', 'of', 'to', 'in', 'for', 'and', 'or', 'is', 'are',
-            'be', 'with', 'that', 'this', 'by', 'on', 'at', 'as', 'from', 'it',
-            'will', 'should', 'must', 'shall', 'their', 'they', 'have', 'has',
-            'been', 'were', 'was', 'which', 'such', 'these', 'those', 'can',
-            'also', 'may', 'not', 'but', 'into', 'its', 'all', 'more', 'new',
-            'between', 'through', 'including', 'both', 'each', 'other', 'about'}
-    words = re.findall(r'\b[a-z][\w-]+\b', text)
-    bigrams = []
-    for i in range(len(words) - 1):
-        if words[i] not in stop and words[i+1] not in stop and len(words[i]) > 3 and len(words[i+1]) > 3:
-            bigrams.append(f"{words[i]} {words[i+1]}")
-    return list(set(bigrams))[:20]
-
-
-def extract_domain_keywords(text):
-    stop = {'the', 'a', 'an', 'of', 'to', 'in', 'for', 'and', 'or', 'is', 'are',
-            'be', 'with', 'that', 'this', 'by', 'on', 'at', 'as', 'from', 'will',
-            'should', 'must', 'shall', 'their', 'they', 'have', 'has', 'been',
-            'were', 'was', 'which', 'such', 'these', 'those', 'can', 'also',
-            'may', 'not', 'but', 'into', 'its', 'all', 'more', 'new', 'project',
-            'proposal', 'work', 'programme', 'horizon', 'europe', 'call', 'topic',
-            'action', 'grant', 'consortium', 'partner', 'result', 'activity',
-            'expected', 'outcome', 'impact', 'scope', 'objective', 'deliverable'}
-    words = set(re.findall(r'\b[a-z][\w-]{4,}\b', text))
-    return words - stop
+            result.add("Policy Alignment Gap", "MEDIUM", 0,
+                f"Call references {', '.join(call_policies)} but proposal misses: {', '.join(missing_policies)}.",
+                "Reference the same EU policies the call mentions — evaluators check for this.",
+                cat, layer)
 
 
 # ============================================================
-# LAYER 2: FIELD AWARENESS CHECKS
+# LAYER 3: FIELD & SMILE
 # ============================================================
 
-def check_field_awareness(pages, result, part_b_start):
-    """Does the proposal know the seminal work AND where the field is heading?"""
-    proposal_text = get_part_b_text(pages, part_b_start)
+def check_field_awareness(model: ProposalModel, result: AnalysisResult):
+    cat = "Field Awareness"
+    layer = 3
+    proposal_text = model.part_b_text
     lower = proposal_text.lower()
 
-    # Check: citation recency
-    years = re.findall(r'\((?:\w+[\s,]+)?(\d{4})\)', proposal_text)
-    years += re.findall(r'\[(\d{4})\]', proposal_text)
-    years = [int(y) for y in years if 1990 <= int(y) <= 2027]
+    # --- Citation recency ---
+    years = [yr for _, yr in model.citations_found]
     if years:
         recent = [y for y in years if y >= 2024]
         old = [y for y in years if y < 2020]
-        pct_recent = len(recent) / len(years) * 100 if years else 0
+        pct_recent = len(recent) / len(years) * 100
         if pct_recent < 20:
-            result.add(
-                "Stale References", "HIGH", 0,
-                f"Only {pct_recent:.0f}% of {len(years)} citations are from 2024+",
-                "At least 30% of references should be from the last 2 years",
-                "Field Awareness", 2
-            )
+            result.add("Stale References", "HIGH", 0,
+                f"Only {pct_recent:.0f}% of {len(years)} citations are from 2024+.",
+                "At least 30% of references should be from the last 2 years.",
+                cat, layer)
         if not old:
-            result.add(
-                "No Foundational Citations", "MEDIUM", 0,
-                "No references older than 2020 — missing seminal/foundational work",
-                "Include foundational papers that established the field, not just recent work",
-                "Field Awareness", 2
-            )
+            result.add("No Foundational Citations", "MEDIUM", 0,
+                "No references older than 2020 — missing seminal/foundational work.",
+                "Include foundational papers that established the field.",
+                cat, layer)
     else:
-        result.add(
-            "No Detectable Citations", "HIGH", 0,
-            "Could not detect any year-based citations in the proposal",
-            "Include properly formatted citations with years",
-            "Field Awareness", 2
-        )
+        result.add("No Detectable Citations", "HIGH", 0,
+            "Could not detect any year-based citations in the proposal.",
+            "Include properly formatted citations with years.",
+            cat, layer)
 
-    # Check: self-citation ratio
-    all_citations = re.findall(r'\(([^)]{5,60}?,\s*\d{4})\)', proposal_text)
-    if len(all_citations) > 5:
-        # Look for repeated author names (likely self-citations)
+    # --- Self-citation ratio ---
+    if len(model.citations_found) > 5:
         author_counts = Counter()
-        for cite in all_citations:
-            author = cite.split(',')[0].strip().split()[-1]
+        for cite, _ in model.citations_found:
+            author = cite.split(',')[0].strip().split()[-1] if ',' in cite else cite.split()[0]
             author_counts[author] += 1
         top_author, top_count = author_counts.most_common(1)[0]
-        if top_count > len(all_citations) * 0.4:
-            result.add(
-                "Self-Citation Overload", "MEDIUM", 0,
-                f"'{top_author}' appears in {top_count}/{len(all_citations)} citations ({top_count/len(all_citations)*100:.0f}%)",
-                "Balance self-citations with external validation. >40% self-citation signals arrogance",
-                "Field Awareness", 2
-            )
+        if top_count > len(model.citations_found) * 0.4:
+            result.add("Self-Citation Overload", "MEDIUM", 0,
+                f"'{top_author}' appears in {top_count}/{len(model.citations_found)} citations "
+                f"({top_count/len(model.citations_found)*100:.0f}%).",
+                "Balance self-citations with external validation. >40% self-citation signals arrogance.",
+                cat, layer)
 
-    # Check: does the proposal reference competing/adjacent projects?
+    # --- Prior EU projects ---
     project_indicators = ['h2020', 'fp7', 'horizon 2020', 'horizon europe',
                           'project', 'funded by', 'grant agreement']
     prior_projects = sum(1 for p in project_indicators if p in lower)
     if prior_projects < 2:
-        result.add(
-            "Prior Art Blindness", "HIGH", 0,
-            "No references to prior EU-funded projects in the same domain",
-            "Show awareness of what's been funded before and what gap remains",
-            "Field Awareness", 2
-        )
+        result.add("Prior Art Blindness", "HIGH", 0,
+            "No references to prior EU-funded projects in the same domain.",
+            "Show awareness of what's been funded before and what gap remains.",
+            cat, layer)
 
-    # Check: does the proposal mention standards bodies / emerging standards?
+    # --- Standards bodies ---
     standards_indicators = ['iso ', 'iec ', 'ieee ', 'w3c', 'oasis', 'etsi',
                             'buildingsmart', 'ogc', 'ietf', 'ecma']
     standards_found = [s for s in standards_indicators if s in lower]
     if not standards_found:
-        result.add(
-            "Standards Blindness", "MEDIUM", 0,
-            "No reference to relevant standards bodies (ISO, IEEE, W3C, ETSI, etc.)",
-            "Reference applicable standards — evaluators check for standardization awareness",
-            "Field Awareness", 2
-        )
+        result.add("Standards Blindness", "MEDIUM", 0,
+            "No reference to relevant standards bodies (ISO, IEEE, W3C, ETSI, etc.).",
+            "Reference applicable standards — evaluators check for standardization awareness.",
+            cat, layer)
 
-    # Check: forward-looking language
+    # --- Forward vision ---
     future_markers = ['roadmap', 'future work', 'emerging', 'next generation',
                       'post-project', 'beyond the project', '2030', '2035',
                       'long-term', 'vision', 'evolution']
     future_found = [m for m in future_markers if m in lower]
     if len(future_found) < 2:
-        result.add(
-            "No Forward Vision", "MEDIUM", 0,
-            "Proposal lacks forward-looking positioning (roadmap, post-project evolution)",
-            "Show where the field is heading and how this project positions for it",
-            "Field Awareness", 2
-        )
+        result.add("No Forward Vision", "MEDIUM", 0,
+            "Proposal lacks forward-looking positioning (roadmap, post-project evolution).",
+            "Show where the field is heading and how this project positions for it.",
+            cat, layer)
 
 
-# ============================================================
-# SMILE METHODOLOGY ASSESSMENT
-# ============================================================
-
-def check_smile_alignment(pages, result, part_b_start):
-    """Evaluate proposal against SMILE phases and principles."""
-    proposal_text = get_part_b_text(pages, part_b_start).lower()
-
-    # Check each SMILE phase
+def check_smile_alignment(model: ProposalModel, result: AnalysisResult) -> dict:
+    cat = "SMILE Methodology"
+    layer = 3
+    proposal_text = model.part_b_text.lower()
     phase_scores = {}
+
     for phase_id, phase in SMILE_PHASES.items():
+        # Keyword coverage (max 50% of score)
         markers_found = [m for m in phase["proposal_markers"] if m in proposal_text]
-        coverage = len(markers_found) / len(phase["proposal_markers"]) * 100
-        phase_scores[phase["name"]] = coverage
+        keyword_coverage = len(markers_found) / len(phase["proposal_markers"]) * 100
 
-        if coverage < 15:
-            result.add(
-                f"SMILE Gap: {phase['name']}", "MEDIUM", 0,
-                f"Phase '{phase['name']}' coverage: {coverage:.0f}% — {phase['what_to_check']}",
+        # Structural evidence (max 50% of score)
+        structural_found = [s for s in phase["structural_checks"] if s in proposal_text]
+        structural_coverage = len(structural_found) / len(phase["structural_checks"]) * 100
+
+        combined = (keyword_coverage + structural_coverage) / 2
+        phase_scores[phase["name"]] = combined
+
+        if combined < 15:
+            result.add(f"SMILE Gap: {phase['name']}", "MEDIUM", 0,
+                f"Phase '{phase['name']}' coverage: {combined:.0f}% (keyword: {keyword_coverage:.0f}%, "
+                f"structural: {structural_coverage:.0f}%). {phase['what_to_check']}",
                 f"Key question: {phase['key_question']}",
-                "SMILE Methodology", 2
-            )
+                cat, layer)
+        elif combined < 30:
+            result.add(f"SMILE Weak: {phase['name']}", "LOW", 0,
+                f"Phase '{phase['name']}' only {combined:.0f}% covered — present but shallow.",
+                f"Strengthen with: {phase['key_question']}",
+                cat, layer)
 
-    # Check: Impact-first principle (Outcome → Action → Insight → Information → Data)
-    # Does the proposal start with outcomes or start with data/technology?
-    for num in range(part_b_start, min(part_b_start + 3, max(pages.keys()) + 1)):
-        text = pages.get(num, "").lower()
-        if 'excellence' in text or 'section 1' in text:
-            first_500 = text[:500]
-            data_first_words = ['data', 'sensor', 'algorithm', 'platform', 'technology',
-                                'system', 'framework', 'architecture', 'infrastructure']
-            impact_first_words = ['impact', 'outcome', 'benefit', 'challenge', 'problem',
-                                  'need', 'gap', 'opportunity', 'society', 'citizen']
-            data_count = sum(1 for w in data_first_words if w in first_500)
-            impact_count = sum(1 for w in impact_first_words if w in first_500)
-            if data_count > impact_count * 2:
-                result.add(
-                    "SMILE Violation: Data First", "HIGH", num,
-                    f"Opening is technology-first ({data_count} tech terms vs {impact_count} impact terms)",
-                    "SMILE principle: Impact first, data last. Lead with the problem, not the solution",
-                    "SMILE Methodology", 2
-                )
-            break
+    # --- Impact-first principle ---
+    part_b_pages_text = model.part_b_text[:2000]
+    part_b_lower = part_b_pages_text.lower()
+    data_first_words = ['data', 'sensor', 'algorithm', 'platform', 'technology',
+                        'system', 'framework', 'architecture', 'infrastructure']
+    impact_first_words = ['impact', 'outcome', 'benefit', 'challenge', 'problem',
+                          'need', 'gap', 'opportunity', 'society', 'citizen']
+    data_count = sum(1 for w in data_first_words if w in part_b_lower)
+    impact_count = sum(1 for w in impact_first_words if w in part_b_lower)
+    if data_count > impact_count * 2:
+        result.add("SMILE Violation: Data First", "HIGH", model.part_b_start_page,
+            f"Opening text is technology-first ({data_count} tech terms vs {impact_count} impact terms).",
+            "SMILE principle: Impact first, data last. Lead with the problem, not the solution.",
+            cat, layer)
 
-    # Check: Three perspectives coverage
+    # --- Three perspectives ---
     for persp_id, persp in SMILE_PERSPECTIVES.items():
         markers_found = [m for m in persp["markers"] if m in proposal_text]
         if len(markers_found) < 2:
-            result.add(
-                f"SMILE Perspective Gap: {persp['name']}", "LOW", 0,
-                f"Weak coverage of '{persp['name']}' perspective ({len(markers_found)}/{len(persp['markers'])} markers)",
-                "SMILE requires People + Systems + Planet perspectives",
-                "SMILE Methodology", 2
-            )
+            result.add(f"SMILE Perspective Gap: {persp['name']}", "LOW", 0,
+                f"Weak coverage of '{persp['name']}' perspective ({len(markers_found)}/{len(persp['markers'])} markers).",
+                "SMILE requires People + Systems + Planet perspectives.",
+                cat, layer)
 
     return phase_scores
 
 
 # ============================================================
-# LAYER 3: ANTI-PATTERN DETECTORS (expanded from v1)
+# LAYER 4: ANTI-PATTERNS
 # ============================================================
 
-def check_unfilled_placeholders(pages, result, start):
+def check_unfilled_placeholders(pages: dict, result: AnalysisResult, start: int):
     placeholders = [
         (r'\[Page limit\]', '[Page limit]'),
         (r'\[insert\s+\w+', '[insert ...]'),
@@ -527,6 +1207,8 @@ def check_unfilled_placeholders(pages, result, start):
         (r'\[XX+\]', '[XX]'),
         (r'\[fill\s+in\]', '[fill in]'),
         (r'\[placeholder\]', '[placeholder]'),
+        (r'\[to be completed\]', '[to be completed]'),
+        (r'\[PARTNER NAME\]', '[PARTNER NAME]'),
     ]
     seen = set()
     for num, text in pages.items():
@@ -537,19 +1219,20 @@ def check_unfilled_placeholders(pages, result, start):
                 key = (label, num)
                 if key not in seen:
                     seen.add(key)
-                    result.add("The Unfinished Template", "CRITICAL", num,
-                               f"Placeholder: {label}",
-                               "Search for '[', 'insert', 'TBD' before submission",
-                               "Anti-Pattern", 3)
+                    result.add("Unfinished Template", "CRITICAL", num,
+                        f"Placeholder found: {label}",
+                        "Search for '[', 'insert', 'TBD' before submission.",
+                        "Anti-Pattern", 4)
 
 
-def check_buzzwords(pages, result, start):
+def check_buzzwords(pages: dict, result: AnalysisResult, start: int):
     buzzwords = {
         'human-centric', 'human-centred', 'socio-technical', 'trustworthy',
         'interoperable', 'scalable', 'holistic', 'synergy', 'paradigm',
         'ecosystem', 'cutting-edge', 'novel', 'innovative', 'groundbreaking',
         'transformative', 'disruptive', 'seamless', 'robust', 'comprehensive',
         'unprecedented', 'game-changing', 'next-generation', 'leveraging',
+        'world-class', 'state-of-the-art', 'beyond state-of-the-art',
     }
     flagged = 0
     for num, text in pages.items():
@@ -560,69 +1243,75 @@ def check_buzzwords(pages, result, start):
             continue
         count = sum(1 for w in words if any(b in w for b in buzzwords))
         density = count / len(words) * 100
-        if density > 4 and flagged < 5:
+        if density > 4:
             flagged += 1
-            sev = "HIGH" if density > 5 else "MEDIUM"
+            sev = "HIGH" if density > 6 else "MEDIUM"
             result.add("Buzzword Overload", sev, num,
-                       f"Density {density:.1f}% ({count}/{len(words)})",
-                       "For every buzzword, add one concrete technical specification",
-                       "Anti-Pattern", 3)
+                f"Density {density:.1f}% ({count}/{len(words)} words are buzzwords).",
+                "For every buzzword, add one concrete technical specification.",
+                "Anti-Pattern", 4)
 
 
-def check_opening(pages, result, start):
+def check_opening(pages: dict, result: AnalysisResult, start: int):
     for num in range(start, min(start + 5, max(pages.keys()) + 1)):
         text = pages.get(num, "")
         if 'excellence' not in text.lower():
             continue
         lines = [l.strip() for l in text.split('\n')
-                 if len(l.strip()) > 30 and not any(s in l.lower() for s in ['call:', 'horizon', 'eu grants', 'part b'])]
+                 if len(l.strip()) > 30 and not any(
+                     s in l.lower() for s in ['call:', 'horizon', 'eu grants', 'part b'])]
         if lines and len(lines[0]) > 250:
-            result.add("The Philosophy Lecture", "HIGH", num,
-                       f"Opening: {len(lines[0])} chars before specifics",
-                       "Project name + problem + solution in ≤100 words",
-                       "Anti-Pattern", 3)
+            result.add("Philosophy Lecture Opening", "HIGH", num,
+                f"Opening paragraph is {len(lines[0])} chars before specifics.",
+                "Project name + problem + solution in ≤100 words.",
+                "Anti-Pattern", 4)
         break
 
 
-def check_baselines(pages, result, start):
+def check_baselines(pages: dict, result: AnalysisResult, start: int):
     found = 0
     for num, text in pages.items():
         if num < start or is_admin_page(text) or found >= 8:
             continue
-        matches = re.findall(r'>=?\s*\d+\s*%|≥\s*\d+\s*%', text)
+        matches = re.findall(r'>=?\s*\d+\s*%|≥\s*\d+\s*%|<=?\s*\d+\s*%|≤\s*\d+\s*%', text)
         if matches:
             lower = text.lower()
-            has_ref = any(b in lower for b in ['baseline defined', 'compared to', 'current state-of', 'measured against'])
+            has_ref = any(b in lower for b in ['baseline', 'compared to', 'current state-of', 'measured against'])
             has_cite = bool(re.search(r'\(\w+[\s,]+\d{4}\)|\[\d+\]', text))
             if not has_ref and not has_cite:
                 found += 1
-                result.add("The Phantom Baseline", "HIGH", num,
-                           f"KPI '{matches[0]}' without baseline",
-                           "Every KPI: metric + SotA value (cited) + target + method",
-                           "Anti-Pattern", 3)
+                result.add("Phantom Baseline", "HIGH", num,
+                    f"KPI '{matches[0]}' stated without a cited baseline.",
+                    "Every KPI: metric + SotA value (cited) + target + measurement method.",
+                    "Anti-Pattern", 4)
 
 
-def check_ghost_partners(pages, result, start):
+def check_ghost_partners(pages: dict, result: AnalysisResult, start: int):
     for num, text in pages.items():
         if num < start:
             continue
-        if 'capacity of participant' not in text.lower() and 'consortium as a whole' not in text.lower():
+        if ('capacity of participant' not in text.lower()
+                and 'consortium as a whole' not in text.lower()):
             continue
         for line in text.split('\n'):
             stripped = line.strip()
-            if 20 < len(stripped) < 130 and re.match(r'^[A-Z]{2,10}\s+(contributes?|supports?|leads?|is supporting|provides?)\b', stripped):
-                result.add("The Ghost Partner", "HIGH", num,
-                           f"Thin description ({len(stripped)} chars): '{stripped[:100]}'",
-                           "Each partner: org profile + prior projects + named personnel",
-                           "Anti-Pattern", 3)
+            if 20 < len(stripped) < 130:
+                if re.match(r'^[A-Z]{2,10}\s+(contributes?|supports?|leads?|is supporting|provides?)\b', stripped):
+                    result.add("Ghost Partner", "HIGH", num,
+                        f"Thin description ({len(stripped)} chars): '{stripped[:100]}'",
+                        "Each partner: org profile + prior projects + named personnel.",
+                        "Anti-Pattern", 4)
 
 
-def check_copy_paste(pages, result, start):
+def check_copy_paste_ssh(pages: dict, result: AnalysisResult, start: int):
     blocks = []
     for num, text in pages.items():
         if num < start or is_admin_page(text):
             continue
-        for m in re.findall(r'(?:SSH|Human.centric|[Ss]ociet\w+)\s*(?:dimension|relevance)[:\s]+(.*?)(?:\n\n|\n[A-Z])', text, re.DOTALL):
+        for m in re.findall(
+            r'(?:SSH|Human.centric|[Ss]ociet\w+)\s*(?:dimension|relevance)[:\s]+(.*?)(?:\n\n|\n[A-Z])',
+            text, re.DOTALL
+        ):
             clean = ' '.join(m.split())[:300]
             if len(clean) > 60:
                 blocks.append((num, clean))
@@ -630,31 +1319,35 @@ def check_copy_paste(pages, result, start):
         for j in range(i + 1, len(blocks)):
             if blocks[i][0] == blocks[j][0]:
                 continue
-            wa, wb = set(blocks[i][1].lower().split()), set(blocks[j][1].lower().split())
+            wa = set(blocks[i][1].lower().split())
+            wb = set(blocks[j][1].lower().split())
             if wa and wb and len(wa & wb) / max(len(wa), len(wb)) > 0.55:
-                result.add("Copy-Paste SSH", "CRITICAL", blocks[j][0],
-                           f"SSH text ~similar to page {blocks[i][0]}",
-                           "Each pilot needs unique SSH analysis",
-                           "Anti-Pattern", 3)
+                result.add("Copy-Paste SSH Section", "CRITICAL", blocks[j][0],
+                    f"SSH text on p.{blocks[j][0]} is ~{int(len(wa&wb)/max(len(wa),len(wb))*100)}% identical to p.{blocks[i][0]}.",
+                    "Each section/pilot needs unique SSH analysis.",
+                    "Anti-Pattern", 4)
 
 
-def check_risks(pages, result, start):
-    all_lower = get_part_b_text(pages, start).lower()
-    has_conflict = any(w in all_lower for w in ['post-conflict', 'war zone', 'kharkiv', 'reconstruction'])
+def check_risks(pages: dict, result: AnalysisResult, start: int, model: ProposalModel):
+    all_lower = model.part_b_text.lower()
+    has_conflict = any(w in all_lower for w in ['post-conflict', 'war zone', 'kharkiv', 'reconstruction', 'conflict zone'])
 
     for num, text in pages.items():
         if num < start:
             continue
         lower = text.lower()
-        if 'risk' not in lower or ('likelihood' not in lower and 'severity' not in lower):
+        if 'risk' not in lower or ('likelihood' not in lower and 'severity' not in lower
+                                   and 'probability' not in lower):
             continue
+
         medium = len(re.findall(r'\bmedium\b', lower))
-        if medium >= 4 and len(re.findall(r'\blow\b', lower)) == 0:
-            result.add("The Medium-High Everything", "MEDIUM", num,
-                       f"All risks same severity (Medium: {medium})",
-                       "Vary ratings. Add management + market + regulatory risks",
-                       "Anti-Pattern", 3)
-        # Check for technical-only risks
+        low_count = len(re.findall(r'\blow\b', lower))
+        if medium >= 4 and low_count == 0:
+            result.add("All-Medium Risk Table", "MEDIUM", num,
+                f"All {medium} risks rated Medium — no Low or High ratings visible.",
+                "Vary ratings. Add management + market + regulatory risks.",
+                "Anti-Pattern", 4)
+
         tech_risk_words = ['technical', 'performance', 'integration', 'data', 'system']
         mgmt_risk_words = ['personnel', 'partner', 'management', 'coordination', 'key person']
         market_risk_words = ['market', 'regulatory', 'competition', 'adoption', 'commercial']
@@ -662,65 +1355,217 @@ def check_risks(pages, result, start):
         has_mgmt = any(w in lower for w in mgmt_risk_words)
         has_market = any(w in lower for w in market_risk_words)
         if has_tech and not has_mgmt and not has_market:
-            result.add("Technical-Only Risk Table", "MEDIUM", num,
-                       "Risk register only covers technical risks",
-                       "Add management risks (personnel, coordination) and market risks (regulatory, adoption)",
-                       "Anti-Pattern", 3)
+            result.add("Technical-Only Risks", "MEDIUM", num,
+                "Risk register only covers technical risks.",
+                "Add management risks (personnel, coordination) and market/regulatory risks.",
+                "Anti-Pattern", 4)
+
         if has_conflict and 'conflict' not in lower and 'security' not in lower:
-            result.add("The Unmentionable Elephant", "CRITICAL", num,
-                       "Conflict-zone pilot but no conflict/security risk",
-                       "Add dedicated risk section for conflict-zone operations",
-                       "Anti-Pattern", 3)
+            result.add("Unaddressed Conflict-Zone Risk", "CRITICAL", num,
+                "Proposal involves conflict-zone activities but risk table has no conflict/security risk.",
+                "Add a dedicated risk entry for conflict-zone operations.",
+                "Anti-Pattern", 4)
         break
 
 
-def check_timeline(pages, result, start):
+def check_timeline(pages: dict, result: AnalysisResult, start: int):
     wp_timing = {}
     for num, text in pages.items():
         if num < start:
             continue
-        for wp, s, e in re.findall(r'Work package (?:number\s+)?(\d+).*?M(\d+)\s*[-–]\s*M?(\d+)', text, re.DOTALL):
+        for wp, s, e in re.findall(
+            r'Work package (?:number\s+)?(\d+).*?M(\d+)\s*[-–]\s*M?(\d+)',
+            text, re.DOTALL
+        ):
             wp_timing[int(wp)] = (int(s), int(e))
     for pilot_wp in [w for w in wp_timing if w >= 7]:
         for comp_wp in [w for w in wp_timing if 3 <= w <= 6]:
             if wp_timing[pilot_wp][0] < wp_timing[comp_wp][1] - 6:
                 result.add("Time-Travel Deliverable", "HIGH", 0,
-                           f"WP{pilot_wp} starts M{wp_timing[pilot_wp][0]} but WP{comp_wp} ends M{wp_timing[comp_wp][1]}",
-                           "Integration WPs must follow component delivery",
-                           "Anti-Pattern", 3)
+                    f"WP{pilot_wp} starts M{wp_timing[pilot_wp][0]} but WP{comp_wp} ends M{wp_timing[comp_wp][1]}.",
+                    "Integration WPs must follow component delivery.",
+                    "Anti-Pattern", 4)
 
 
-def check_exploitation(pages, result, start):
+def check_exploitation(pages: dict, result: AnalysisResult, start: int):
     for num, text in pages.items():
         if num < start:
             continue
         lower = text.lower()
         if 'exploitation' not in lower or ('strategy' not in lower and 'plan' not in lower):
             continue
-        specific = any(m in lower for m in ['eur ', '€', 'revenue', 'pricing', 'saas', 'license fee'])
-        generic = any(m in lower for m in ['partners will', 'results will be', 'will integrate'])
+        specific = any(m in lower for m in ['eur ', '€', 'revenue', 'pricing', 'saas', 'license fee', 'licensing'])
+        generic = any(m in lower for m in ['partners will', 'results will be', 'will integrate', 'plan to'])
         if generic and not specific:
-            result.add("The Exploitation Fog", "HIGH", num,
-                       "Generic exploitation — no named partner plans with revenue models",
-                       "Each partner: WHAT product + WHICH market + WHEN + revenue model",
-                       "Anti-Pattern", 3)
+            result.add("Exploitation Fog", "HIGH", num,
+                "Generic exploitation — no named partner plans with revenue models.",
+                "Each partner: WHAT product + WHICH market + WHEN + revenue model.",
+                "Anti-Pattern", 4)
             break
 
 
-def check_market(pages, result, start):
+def check_market(pages: dict, result: AnalysisResult, start: int):
     for num, text in pages.items():
         if num < start:
             continue
-        if re.search(r'(?:USD|EUR|€|\$)\s*[\d,.]+\s*(?:bn|billion)', text, re.IGNORECASE):
+        if re.search(r'(?:USD|EUR|€|\$)\s*[\d,.]+\s*(?:bn|billion|trillion)', text, re.IGNORECASE):
             if not any(w in text.lower() for w in ['addressable', 'serviceable', 'sub-segment', 'target segment']):
-                result.add("The TAM Distraction", "MEDIUM", num,
-                           "Large market figure without sub-segment drill-down",
-                           "Total market → addressable → your capture path. Cite sources",
-                           "Anti-Pattern", 3)
+                result.add("TAM Distraction", "MEDIUM", num,
+                    "Large market figure cited without sub-segment drill-down.",
+                    "Total market → addressable → serviceable → your capture path. Cite sources.",
+                    "Anti-Pattern", 4)
                 break
 
 
-def check_meeting_milestones(pages, result, start):
+def check_output_outcome_impact(pages: dict, result: AnalysisResult, start: int):
+    for num, text in pages.items():
+        if num < start or is_admin_page(text):
+            continue
+        lower = text.lower()
+        if 'expected outcome' not in lower and 'expected impact' not in lower:
+            continue
+        if 'outcome' in lower and 'impact' in lower:
+            outcome_pos = lower.find('outcome')
+            outcome_section = lower[outcome_pos:outcome_pos + 500]
+            publish_words = ['publish', 'paper', 'conference', 'journal', 'disseminat']
+            if any(p in outcome_section for p in publish_words):
+                result.add("Output-Outcome Confusion", "MEDIUM", num,
+                    "Publications listed as outcomes — publications are outputs, not outcomes.",
+                    "Outputs=what you produce. Outcomes=what changes. Impacts=long-term societal change.",
+                    "Anti-Pattern", 4)
+                break
+
+
+def check_dissemination_exploitation_conflation(pages: dict, result: AnalysisResult, start: int):
+    for num, text in pages.items():
+        if num < start or is_admin_page(text):
+            continue
+        lower = text.lower()
+        if 'dissemination' not in lower or 'exploitation' not in lower:
+            continue
+        combined = lower.count('dissemination and exploitation') + lower.count('exploitation and dissemination')
+        separate_d = lower.count('dissemination') - combined * 2
+        separate_e = lower.count('exploitation') - combined * 2
+        if combined > 3 and separate_d < 2 and separate_e < 2:
+            result.add("D&E Conflation", "MEDIUM", num,
+                "Dissemination and exploitation always appear together, never separately.",
+                "These are different: dissemination=awareness, exploitation=economic/policy value creation.",
+                "Anti-Pattern", 4)
+            break
+
+
+def check_governance(pages: dict, result: AnalysisResult, start: int):
+    for num, text in pages.items():
+        if num < start:
+            continue
+        lower = text.lower()
+        governance_terms = ['general assembly', 'steering committee', 'advisory board',
+                            'project board', 'executive committee']
+        if sum(1 for g in governance_terms if g in lower) < 2:
+            continue
+        if not any(p in lower for p in ['conflict resolution', 'contingency', 'escalation', 'ip dispute', 'decision making']):
+            result.add("Governance Template", "MEDIUM", num,
+                "Standard governance structure without project-specific conflict/IP mechanisms.",
+                "Add: conflict resolution procedure, IP governance, escalation paths.",
+                "Anti-Pattern", 4)
+        break
+
+
+def check_acronyms(model: ProposalModel, result: AnalysisResult):
+    safe = {'EU', 'AI', 'XR', 'VR', 'AR', 'MR', 'BIM', 'GIS', 'API', 'SSH', 'KPI',
+            'TRL', 'DMP', 'FAIR', 'GDPR', 'SME', 'IOT', 'CEO', 'CTO', 'RIA',
+            'HTTP', 'JSON', 'CSV', 'PDF', 'URL', 'GPU', 'CPU', 'HPC', 'WP', 'PM',
+            'THE', 'AND', 'FOR', 'NOT', 'BUT', 'NOR', 'YET', 'CSA', 'ERC', 'ETF',
+            'NATO', 'WHO', 'UN', 'ICT', 'IoT', 'ML', 'NLP', 'LLM', 'UAV', 'UAS'}
+    text = model.part_b_text
+    used = model.acronyms_used - safe
+    # Filter: look for definition pattern "(ACRONYM)" near expanded form
+    defined = set()
+    for acr in used:
+        if re.search(rf'\([^)]*{acr}[^)]*\)', text) or re.search(rf'\b{acr}\b.*?means', text):
+            defined.add(acr)
+    undefined = used - defined - model.acronyms_defined
+    undefined = {a for a in undefined if len(a) >= 3 and not a.isdigit()}
+    if len(undefined) > 8:
+        result.add("Orphaned Acronyms", "LOW", 0,
+            f"{len(undefined)} potentially undefined acronyms: {', '.join(sorted(undefined)[:12])}",
+            "Master acronym list + define at first use.",
+            "Anti-Pattern", 4)
+
+
+def check_sota(pages: dict, result: AnalysisResult, start: int):
+    for num, text in pages.items():
+        if num < start or is_admin_page(text):
+            continue
+        lower = text.lower()
+        if ('state of the art' in lower or 'state-of-the-art' in lower) and ('advancement' in lower or 'beyond' in lower):
+            competitors = ['nvidia', 'omniverse', 'unity', 'unreal', 'microsoft',
+                           'bentley', 'siemens', 'dassault', 'autodesk', 'cesium',
+                           'google', 'meta', 'amazon', 'oracle', 'sap', 'ibm']
+            if not any(c in lower for c in competitors):
+                result.add("Reinvented Wheel", "HIGH", num,
+                    "Proposal claims beyond-SotA without naming any commercial competitors.",
+                    "Name and cite competitors, explain the specific gap you fill.",
+                    "Anti-Pattern", 4)
+            break
+
+
+def check_partner_driven_wps(model: ProposalModel, result: AnalysisResult):
+    """Detect WP-per-partner structure (anti-pattern: each partner owns one WP)."""
+    if len(model.work_packages) < 3 or len(model.partners) < 3:
+        return
+    leads = [wp.lead for wp in model.work_packages if wp.lead]
+    if not leads:
+        return
+    lead_counts = Counter(leads)
+    unique_leads = len(lead_counts)
+    # If number of unique WP leads equals number of WPs, each partner owns exactly one WP
+    if unique_leads == len(leads) and unique_leads >= len(model.partners) - 1:
+        result.add("Partner-Driven WP Structure", "HIGH", 0,
+            f"Each partner appears to lead exactly one WP ({unique_leads} WPs, {unique_leads} different leads).",
+            "WPs should be structured around research objectives, not partner territories. "
+            "Partner-driven WPs signal poor integration.",
+            "Anti-Pattern", 4)
+
+
+def check_ai_disclosure(model: ProposalModel, result: AnalysisResult):
+    """If AI/ML is in the proposal, check for AI tool disclosure."""
+    lower = model.part_b_text.lower()
+    has_ai = any(t in lower for t in [
+        'machine learning', 'deep learning', 'neural network', 'large language model',
+        'generative ai', 'chatgpt', 'gpt-4', 'llm', 'foundation model'
+    ])
+    if has_ai:
+        has_disclosure = any(d in lower for d in [
+            'ai tool', 'ai-generated', 'generated with', 'written with',
+            'assisted by ai', 'ai assistance', 'disclosure'
+        ])
+        if not has_disclosure:
+            result.add("AI Tool Disclosure Missing", "LOW", 0,
+                "Proposal uses AI/ML as a topic but does not disclose AI tool usage in writing.",
+                "HE now requires disclosure if AI tools were used in preparing the proposal text.",
+                "Anti-Pattern", 4)
+
+
+def check_lump_sum(pages: dict, result: AnalysisResult, start: int):
+    """Check for lump-sum WP design issues."""
+    for num, text in pages.items():
+        if num < start:
+            continue
+        lower = text.lower()
+        if 'lump sum' not in lower and 'lump-sum' not in lower:
+            continue
+        # In lump-sum, each WP must have a fixed price — check for per-WP budget
+        wp_budgets = re.findall(r'WP\s*\d+.*?EUR\s*[\d,]+', text, re.IGNORECASE)
+        if not wp_budgets:
+            result.add("Lump-Sum WP Budget Missing", "HIGH", num,
+                "Proposal uses lump-sum scheme but no per-WP budget breakdown detected.",
+                "Lump-sum grants require a fixed budget per WP — include WP cost tables.",
+                "Anti-Pattern", 4)
+        break
+
+
+def check_meeting_milestones(pages: dict, result: AnalysisResult, start: int):
     for num, text in pages.items():
         if num < start or is_admin_page(text):
             continue
@@ -728,230 +1573,251 @@ def check_meeting_milestones(pages, result, start):
         if 'milestone' not in lower:
             continue
         bad_milestones = re.findall(
-            r'(?:milestone|MS\d+)[:\s]*(.*?(?:meeting|workshop|review|kick.?off|conference).*?)(?:\n|$)',
+            r'(?:milestone|ms\s*\d+)[:\s]*(.*?(?:meeting|workshop|review|kick.?off|conference|webinar).*?)(?:\n|$)',
             lower
         )
         if bad_milestones:
             result.add("Meeting Milestones", "HIGH", num,
-                       f"Milestone is a meeting/event, not a verifiable achievement: '{bad_milestones[0][:80]}'",
-                       "Milestones must be concrete verifiable outputs, not calendar events",
-                       "Anti-Pattern", 3)
+                f"Milestone is an event, not a verifiable achievement: '{bad_milestones[0][:80]}'",
+                "Milestones must be concrete verifiable outputs, not calendar events.",
+                "Anti-Pattern", 4)
             break
 
 
-def check_output_outcome_impact(pages, result, start):
-    for num, text in pages.items():
-        if num < start or is_admin_page(text):
-            continue
-        lower = text.lower()
-        if 'expected outcome' not in lower and 'expected impact' not in lower:
-            continue
-        has_output = 'output' in lower
-        has_outcome = 'outcome' in lower
-        has_impact = 'impact' in lower
-        if has_outcome and has_impact:
-            outcome_section = text[lower.find('outcome'):lower.find('outcome') + 500].lower()
-            impact_section = text[max(0, lower.rfind('impact') - 50):lower.rfind('impact') + 500].lower()
-            publish_words = ['publish', 'paper', 'conference', 'journal', 'disseminat']
-            if any(p in outcome_section for p in publish_words):
-                result.add(
-                    "Output-Outcome Confusion", "MEDIUM", num,
-                    "Publications listed as outcomes — publications are outputs, not outcomes",
-                    "Outputs = what you produce. Outcomes = what changes because of it. Impacts = long-term societal change",
-                    "Anti-Pattern", 3
-                )
-                break
-
-
-def check_page_count(pages, result, start):
-    part_b_pages = sum(1 for n, t in pages.items() if n >= start and not is_admin_page(t))
-    if part_b_pages > 45:
-        result.add("Page Limit Risk", "HIGH", 0,
-                   f"Part B appears to be ~{part_b_pages} pages (limit is typically 40 for RIA/IA as of Dec 2025)",
-                   "Pages beyond the limit are REMOVED by the system — evaluators never see them",
-                   "Anti-Pattern", 3)
-
-
-def check_budget_ratios(pages, result, start):
+def check_budget_narrative(pages: dict, result: AnalysisResult, start: int):
+    """Check that each WP has a budget narrative, not just tables."""
     for num, text in pages.items():
         if num < start:
             continue
         lower = text.lower()
-        if 'management' in lower and ('wp1' in lower or 'work package 1' in lower or 'work package number' in lower):
-            # Check if WP1 allocation seems disproportionate
-            pm_match = re.findall(r'(?:WP\s*1|management).*?(\d{2,3})\s*(?:PM|person)', text, re.IGNORECASE)
-            total_match = re.findall(r'total.*?(\d{3,4})\s*(?:PM|person)', text, re.IGNORECASE)
-            if pm_match and total_match:
-                try:
-                    wp1 = int(pm_match[0])
-                    total = int(total_match[0])
-                    pct = wp1 / total * 100
-                    if pct > 12:
-                        result.add("Heavy Management WP", "MEDIUM", num,
-                                   f"WP1 (management) is {pct:.0f}% of total PMs — typical is 5-10%",
-                                   "Keep management WP to 5-10% of total effort",
-                                   "Anti-Pattern", 3)
-                except (ValueError, ZeroDivisionError):
-                    pass
+        if 'budget' not in lower and 'costs' not in lower:
+            continue
+        # Look for cost justification text
+        has_justification = any(w in lower for w in [
+            'personnel costs are justified', 'cost justification',
+            'rates are based on', 'hourly rate', 'daily rate',
+            'cost breakdown', 'budget breakdown'
+        ])
+        has_table = bool(re.search(r'\d{4,}\s+\d{4,}', text))  # numeric table
+        if has_table and not has_justification:
+            result.add("Budget Table Without Narrative", "MEDIUM", num,
+                "Budget appears as numbers only with no cost justification narrative.",
+                "Add narrative explaining personnel rates, equipment necessity, travel rationale.",
+                "Anti-Pattern", 4)
             break
 
 
-def check_dissemination_exploitation_conflation(pages, result, start):
-    for num, text in pages.items():
-        if num < start or is_admin_page(text):
-            continue
-        lower = text.lower()
-        if 'dissemination' not in lower and 'exploitation' not in lower:
-            continue
-        if 'dissemination and exploitation' in lower or 'exploitation and dissemination' in lower:
-            combined = lower.count('dissemination and exploitation') + lower.count('exploitation and dissemination')
-            separate_d = lower.count('dissemination') - combined
-            separate_e = lower.count('exploitation') - combined
-            if combined > 3 and separate_d < 2 and separate_e < 2:
-                result.add(
-                    "D&E Conflation", "MEDIUM", num,
-                    "Dissemination and exploitation always mentioned together, never separately",
-                    "These are different: dissemination = awareness, exploitation = economic/policy value creation",
-                    "Anti-Pattern", 3
-                )
-                break
+def check_consortium_diversity(model: ProposalModel, result: AnalysisResult):
+    """Score country diversity; flag low-diversity consortia."""
+    if not model.partners:
+        return
+    countries = Counter(p.country for p in model.partners if p.country)
+    n_countries = len(countries)
+    n_partners = len(model.partners)
+    if n_countries == 0:
+        return
+    diversity = n_countries / n_partners  # 1.0 = all different countries
 
+    # Flag if too concentrated in one country
+    dominant_country, dominant_count = countries.most_common(1)[0]
+    if dominant_count > n_partners * 0.5 and n_partners >= 4:
+        result.add("Low Country Diversity", "MEDIUM", 0,
+            f"{dominant_count}/{n_partners} partners from {dominant_country} — consortium may lack geographic balance.",
+            "Horizon Europe values geographic spread. Consider broadening to Widening countries.",
+            "Anti-Pattern", 4)
 
-def check_zero_pm_wp_lead(pages, result, start):
-    """Partner leads WP/task but has 0 PMs allocated."""
-    proposal_text = get_part_b_text(pages, start)
-    task_leads = re.findall(r'T\d+\.\d+.*?\(([A-Z]{2,10})\s*/\s*M\d+', proposal_text)
-    lead_counts = Counter(task_leads)
-
-    pm_table_text = ""
-    for num, text in pages.items():
-        if num < start:
-            continue
-        if 'total' in text.lower() and re.search(r'\b\d{2,3}\b.*\b\d{2,3}\b', text):
-            pm_table_text += text
-
-    for partner, count in lead_counts.items():
-        if len(partner) >= 2 and count >= 2:
-            if f"{partner}\n" in pm_table_text or f"{partner} " in pm_table_text:
-                context = pm_table_text[pm_table_text.find(partner):pm_table_text.find(partner) + 100]
-                if '\n0\n' in context or '\n0 \n' in context:
-                    result.add(
-                        "Zero-PM Task Lead", "CRITICAL", 0,
-                        f"{partner} leads {count} tasks but may have 0 PMs in that WP",
-                        "Cannot lead a task with no effort allocated — fix PM table",
-                        "Anti-Pattern", 3
-                    )
-
-
-def check_sota(pages, result, start):
-    for num, text in pages.items():
-        if num < start or is_admin_page(text):
-            continue
-        lower = text.lower()
-        if ('state of the art' in lower or 'state-of-the-art' in lower) and ('advancement' in lower or 'beyond' in lower):
-            competitors = ['nvidia', 'omniverse', 'unity', 'unreal', 'microsoft',
-                           'bentley', 'siemens', 'dassault', 'autodesk', 'cesium', 'google', 'meta']
-            if not any(c in lower for c in competitors):
-                result.add("The Reinvented Wheel", "HIGH", num,
-                           "Beyond-SotA without naming commercial competitors",
-                           "Name and cite competitors, explain the specific gap",
-                           "Anti-Pattern", 3)
-            break
-
-
-def check_governance(pages, result, start):
-    for num, text in pages.items():
-        if num < start:
-            continue
-        lower = text.lower()
-        if sum(1 for g in ['general assembly', 'steering committee', 'advisory board'] if g in lower) < 2:
-            continue
-        if not any(p in lower for p in ['conflict resolution', 'contingency', 'escalation', 'ip dispute']):
-            result.add("Governance Template", "MEDIUM", num,
-                       "Standard governance without project-specific mechanisms",
-                       "Add: conflict resolution, IP governance, escalation paths",
-                       "Anti-Pattern", 3)
-        break
-
-
-def check_acronyms(pages, result, start):
-    text = get_part_b_text(pages, start)
-    used = set(re.findall(r'\b([A-Z]{3,6})\b', text))
-    safe = {'EU', 'AI', 'XR', 'VR', 'AR', 'MR', 'BIM', 'GIS', 'API', 'SSH', 'KPI',
-            'TRL', 'DMP', 'FAIR', 'GDPR', 'SME', 'IOT', 'CEO', 'CTO', 'RIA',
-            'HTTP', 'JSON', 'CSV', 'PDF', 'URL', 'GPU', 'CPU', 'HPC', 'WP', 'PM',
-            'THE', 'AND', 'FOR', 'NOT', 'BUT', 'NOR', 'YET'}
-    undefined = [a for a in (used - safe) if not re.search(rf'\([^)]*{a}\)', text)]
-    if len(undefined) > 8:
-        result.add("Orphaned Acronyms", "LOW", 0,
-                   f"{len(undefined)} potentially undefined: {', '.join(sorted(undefined)[:10])}",
-                   "Master acronym list + define at first use",
-                   "Anti-Pattern", 3)
+    # Positive signal: includes widening countries
+    widening = {'BG', 'HR', 'CY', 'CZ', 'EE', 'HU', 'LV', 'LT', 'MT', 'PL',
+                'PT', 'RO', 'SK', 'SI', 'AL', 'BA', 'MK', 'MD', 'ME', 'RS', 'UA'}
+    has_widening = any(p.country in widening for p in model.partners if p.country)
+    if has_widening and n_countries >= 4:
+        # This is a positive signal — no finding raised, but noted in score bonus
+        pass
 
 
 # ============================================================
-# SCORING
+# SCORING  (base 3.0, bonuses up to +2.0, penalties up to -2.0)
 # ============================================================
 
-SEVERITY_WEIGHTS = {"CRITICAL": 1.0, "HIGH": 0.5, "MEDIUM": 0.15, "LOW": 0.02}
+SEVERITY_WEIGHTS = {"CRITICAL": 0.8, "HIGH": 0.4, "MEDIUM": 0.12, "LOW": 0.03}
 
 CRITERION_MAP = {
     "Excellence": {
-        "layer_1": ["Call Outcome Gap", "Call Terminology Gap", "TRL Mismatch", "Action Type Mismatch"],
-        "layer_2": ["Stale References", "No Foundational Citations", "Prior Art Blindness",
-                    "Self-Citation Overload", "No Forward Vision", "Standards Blindness",
-                    "SMILE Violation: Data First"],
-        "layer_3": ["The Philosophy Lecture", "Buzzword Overload", "The Phantom Baseline",
-                    "The Reinvented Wheel"],
+        "layers": [1, 2, 3],
+        "patterns": [
+            "Call Outcome Gap", "Call Terminology Gap", "TRL Mismatch", "Action Type Mismatch",
+            "IA + Low TRL Mismatch", "RIA + High TRL Mismatch",
+            "Stale References", "No Foundational Citations", "Prior Art Blindness",
+            "Self-Citation Overload", "No Forward Vision", "Standards Blindness",
+            "SMILE Violation: Data First", "Philosophy Lecture Opening",
+            "Buzzword Overload", "Phantom Baseline", "Reinvented Wheel",
+            "Abstract-Body Disconnect", "Abstract Too Short",
+        ] + [f"SMILE Gap: {p['name']}" for p in SMILE_PHASES.values()],
+        "bonus_patterns": ["No Detectable Citations"],
     },
     "Impact": {
-        "layer_1": ["Policy Alignment Gap", "Work Programme Parrot"],
-        "layer_2": [],
-        "layer_3": ["The Exploitation Fog", "The TAM Distraction", "Copy-Paste SSH",
-                    "Output-Outcome Confusion", "D&E Conflation"],
+        "layers": [2, 3, 4],
+        "patterns": [
+            "Policy Alignment Gap", "Work Programme Parrot",
+            "Outcomes Without Deliverables", "Call Outcome Gap",
+            "Exploitation Fog", "TAM Distraction", "Copy-Paste SSH Section",
+            "Output-Outcome Confusion", "D&E Conflation",
+            "AI Tool Disclosure Missing",
+        ],
+        "bonus_patterns": [],
     },
     "Implementation": {
-        "layer_1": [],
-        "layer_2": [],
-        "layer_3": ["The Unfinished Template", "The Ghost Partner", "Time-Travel Deliverable",
-                    "The Medium-High Everything", "Governance Template", "The Unmentionable Elephant",
-                    "Meeting Milestones", "Technical-Only Risk Table", "Zero-PM Task Lead",
-                    "Page Limit Risk", "Heavy Management WP", "Orphaned Acronyms"],
+        "layers": [1, 4],
+        "patterns": [
+            "Consortium Too Small", "Country Diversity Insufficient",
+            "Zero-PM Task Lead", "WP Exceeds Duration", "WP Invalid Dates",
+            "Orphaned Deliverable References", "Meeting Milestone",
+            "Unfinished Template", "Ghost Partner", "Time-Travel Deliverable",
+            "All-Medium Risk Table", "Governance Template", "Unaddressed Conflict-Zone Risk",
+            "Meeting Milestones", "Technical-Only Risks", "Zero-PM Task Lead",
+            "Page Limit Risk", "Heavy Management WP", "Orphaned Acronyms",
+            "Partner-Driven WP Structure", "High Subcontracting Ratio",
+            "Lump-Sum WP Budget Missing", "Budget Table Without Narrative",
+            "Low Country Diversity", "Low Industry Ratio for IA",
+            "Under-Resourced Management",
+        ],
+        "bonus_patterns": [],
     },
 }
 
 
-def estimate_scores(result):
+def estimate_scores(result: AnalysisResult, model: ProposalModel) -> dict:
     scores = {}
-    for criterion, pattern_map in CRITERION_MAP.items():
-        base = 4.5
-        penalty = 0
-        all_patterns = pattern_map["layer_1"] + pattern_map["layer_2"] + pattern_map["layer_3"]
-        # Also catch SMILE gaps
-        all_patterns += [f"SMILE Gap: {p['name']}" for p in SMILE_PHASES.values()]
-        all_patterns += [f"SMILE Perspective Gap: {p['name']}" for p in SMILE_PERSPECTIVES.values()]
+    for criterion, cfg in CRITERION_MAP.items():
+        base = 3.0
+        penalty = 0.0
+        bonus = 0.0
+
+        all_patterns = cfg["patterns"]
 
         for f in result.findings:
             if f.pattern in all_patterns:
                 penalty += SEVERITY_WEIGHTS.get(f.severity, 0.1)
 
-        scores[criterion] = round(max(1.0, min(5.0, base - penalty)), 1)
+        # Bonus: citations found
+        if criterion == "Excellence":
+            if model.citations_found:
+                years = [yr for _, yr in model.citations_found]
+                recent_pct = len([y for y in years if y >= 2023]) / len(years) * 100
+                if recent_pct >= 30:
+                    bonus += 0.3
+                if len(years) >= 20:
+                    bonus += 0.2
+            if model.kpis_found:
+                bonus += min(0.3, len(model.kpis_found) * 0.05)
+            if model.abstract_text and len(model.abstract_text) >= 1000:
+                bonus += 0.2
+
+        if criterion == "Impact":
+            if model.deliverables:
+                bonus += min(0.4, len(model.deliverables) * 0.04)
+            if model.milestones:
+                bonus += min(0.2, len(model.milestones) * 0.05)
+
+        if criterion == "Implementation":
+            if len(model.partners) >= 5:
+                bonus += 0.2
+            countries = set(p.country for p in model.partners if p.country)
+            if len(countries) >= 5:
+                bonus += 0.2
+            if model.work_packages and model.tasks:
+                bonus += 0.1
+            if model.risks:
+                risk_cats = set()
+                for r in model.risks:
+                    rl = r.description.lower()
+                    if any(w in rl for w in ['technical', 'system', 'data']):
+                        risk_cats.add('technical')
+                    if any(w in rl for w in ['partner', 'personnel', 'management']):
+                        risk_cats.add('management')
+                    if any(w in rl for w in ['market', 'regulatory', 'adoption']):
+                        risk_cats.add('market')
+                bonus += len(risk_cats) * 0.1
+
+        score = base + bonus - penalty
+        scores[criterion] = round(max(1.0, min(5.0, score)), 1)
     return scores
+
+
+# ============================================================
+# BUDGET ANALYSIS MODE
+# ============================================================
+
+def run_budget_analysis(model: ProposalModel, result: AnalysisResult):
+    """Dedicated budget analysis for --budget flag."""
+    cat = "Budget Analysis"
+    layer = 1
+
+    if model.budget_total == 0:
+        result.add("Budget Not Parseable", "HIGH", 0,
+            "Could not extract total budget from the document.",
+            "Budget tables may use non-standard formatting.",
+            cat, layer)
+        return
+
+    # EU contribution rate
+    if model.budget_eu > 0 and model.budget_total > 0:
+        eu_rate = model.budget_eu / model.budget_total * 100
+        if eu_rate > 100:
+            result.add("EU Rate Exceeds 100%", "CRITICAL", 0,
+                f"EU contribution ({eu_rate:.1f}%) exceeds total budget.",
+                "Check budget calculation — EU rate for RIA is 100%, IA is 70% for profit entities.",
+                cat, layer)
+        elif eu_rate > 100.1:
+            pass
+        elif eu_rate < 60:
+            result.add("Low EU Contribution Rate", "LOW", 0,
+                f"EU contribution rate is {eu_rate:.1f}% — lower than typical.",
+                "RIA: 100% for non-profits, 100% for profit entities. IA: 70% for profit entities.",
+                cat, layer)
+
+    # Personnel cost share
+    if model.budget_total > 0 and model.personnel_total > 0:
+        pers_pct = model.personnel_total / model.budget_total * 100
+        if pers_pct < 30:
+            result.add("Low Personnel Cost Share", "MEDIUM", 0,
+                f"Personnel costs are only {pers_pct:.1f}% of total budget.",
+                "Personnel is typically 50-70% of HE budgets. Low share may signal equipment/subcontracting inflation.",
+                cat, layer)
+        elif pers_pct > 85:
+            result.add("Very High Personnel Share", "LOW", 0,
+                f"Personnel costs are {pers_pct:.1f}% of total budget.",
+                "Very high personnel share — check if travel/equipment/indirect are correctly allocated.",
+                cat, layer)
+
+    # Indirect cost rate check (flat rate is 25% of direct costs)
+    if model.personnel_total > 0 and model.indirect_total > 0:
+        direct_costs = (model.personnel_total + model.equipment_total +
+                        model.travel_total + model.subcontracting_total)
+        expected_indirect = direct_costs * 0.25
+        actual_rate = model.indirect_total / direct_costs * 100 if direct_costs > 0 else 0
+        if abs(actual_rate - 25) > 5:
+            result.add("Indirect Cost Rate Unexpected", "MEDIUM", 0,
+                f"Indirect costs are {actual_rate:.1f}% of direct costs (HE flat rate is 25%).",
+                "Unless using actual indirect costs (rare), the flat rate is 25%.",
+                cat, layer)
 
 
 # ============================================================
 # REPORT
 # ============================================================
 
-def format_report(result, pdf_path, page_count, smile_scores=None, has_call=False):
-    scores = estimate_scores(result)
+def format_report(result: AnalysisResult, pdf_path: str, model: ProposalModel,
+                  smile_scores: Optional[dict] = None, has_call: bool = False,
+                  budget_mode: bool = False) -> str:
+    scores = estimate_scores(result, model)
     total = sum(scores.values())
     severity_counts = Counter(f.severity for f in result.findings)
     layer_counts = Counter(f.layer for f in result.findings)
     pattern_counts = Counter(f.pattern for f in result.findings)
 
     lines = []
-    w = 72
+    w = 76
 
     lines.append("")
     lines.append("=" * w)
@@ -959,56 +1825,82 @@ def format_report(result, pdf_path, page_count, smile_scores=None, has_call=Fals
     lines.append("  Consortia Review Under Controlled Interrogation")
     lines.append("  Before Live Evaluation")
     lines.append("=" * w)
-    lines.append(f"  File:      {Path(pdf_path).name}")
-    lines.append(f"  Pages:     {page_count}")
-    lines.append(f"  Findings:  {len(result.findings)}")
-    lines.append(f"  Call text: {'provided' if has_call else 'NOT PROVIDED (Layer 1 limited)'}")
+    lines.append(f"  File:        {Path(pdf_path).name}")
+    lines.append(f"  Pages:       {model.total_pages}")
+    lines.append(f"  Findings:    {len(result.findings)}")
+    lines.append(f"  Call text:   {'provided' if has_call else 'NOT PROVIDED (Layer 2 limited)'}")
     lines.append("")
 
-    # --- Layered Score ---
-    lines.append("  THREE-LAYER ANALYSIS")
+    # --- Proposal snapshot ---
+    lines.append("  PROPOSAL SNAPSHOT")
     lines.append("  " + "-" * (w - 4))
-    layer_names = {1: "Call Alignment", 2: "Field & SMILE", 3: "Anti-Patterns"}
-    for layer in [1, 2, 3]:
+    lines.append(f"  Acronym:       {model.acronym or '(not detected)'}")
+    if model.title:
+        lines.append(f"  Title:         {model.title[:70]}")
+    lines.append(f"  Duration:      {model.duration_months}m" if model.duration_months else "  Duration:      (not detected)")
+    lines.append(f"  Action type:   {model.action_type or '(not detected)'}")
+    lines.append(f"  Call ID:       {model.call_id or '(not detected)'}")
+    lines.append(f"  Partners:      {len(model.partners)}" +
+                 (f" — {', '.join(set(p.country for p in model.partners if p.country))}"
+                  if model.partners else ""))
+    lines.append(f"  Work packages: {len(model.work_packages)}" +
+                 (f" (WP{model.work_packages[0].number}–WP{model.work_packages[-1].number})"
+                  if model.work_packages else ""))
+    lines.append(f"  Deliverables:  {len(model.deliverables)}")
+    lines.append(f"  Milestones:    {len(model.milestones)}")
+    lines.append(f"  Citations:     {len(model.citations_found)}")
+    if model.budget_total > 0:
+        lines.append(f"  Budget total:  EUR {model.budget_total:>12,.0f}")
+    if model.budget_eu > 0:
+        lines.append(f"  EU contrib:    EUR {model.budget_eu:>12,.0f}")
+    lines.append("")
+
+    # --- Four-layer summary ---
+    layer_names = {1: "Structural Integrity", 2: "Call Alignment",
+                   3: "Field & SMILE", 4: "Anti-Patterns"}
+    lines.append("  FOUR-LAYER ANALYSIS")
+    lines.append("  " + "-" * (w - 4))
+    for layer in [1, 2, 3, 4]:
         count = layer_counts.get(layer, 0)
         crits = len([f for f in result.findings if f.layer == layer and f.severity == "CRITICAL"])
-        lines.append(f"  Layer {layer}: {layer_names[layer]:<20} {count:>3} findings ({crits} critical)")
+        highs = len([f for f in result.findings if f.layer == layer and f.severity == "HIGH"])
+        lines.append(f"  Layer {layer}: {layer_names[layer]:<24} "
+                     f"{count:>3} findings ({crits} critical, {highs} high)")
     lines.append("")
 
-    # --- Estimated Score ---
-    lines.append("  ESTIMATED SCORE")
+    # --- Score ---
+    lines.append("  ESTIMATED SCORE  (base 3.0 + bonuses - penalties, range 1.0-5.0)")
     lines.append("  " + "-" * (w - 4))
     for criterion, score in scores.items():
-        filled = int(score * 4)
+        filled = int((score - 1.0) / 4.0 * 20)
         bar = "#" * filled + "." * (20 - filled)
-        status = "OK" if score >= 3.0 else "WEAK"
+        status = "STRONG" if score >= 4.0 else ("OK" if score >= 3.0 else "WEAK")
         lines.append(f"  {criterion:<16} {score}/5.0  [{bar}]  {status}")
     lines.append(f"  {'TOTAL':<16} {total:.1f}/15.0")
-    passes = total >= 10 and all(s >= 3.0 for s in scores.values())
-    lines.append(f"  Threshold: {'LIKELY ABOVE' if passes else 'AT RISK'}")
+    passes = total >= 10.0 and all(s >= 3.0 for s in scores.values())
+    lines.append(f"  Threshold:      {'LIKELY ABOVE' if passes else 'AT RISK'}")
     lines.append("")
 
-    # --- SMILE Radar ---
+    # --- SMILE radar ---
     if smile_scores:
         lines.append("  SMILE METHODOLOGY COVERAGE")
         lines.append("  " + "-" * (w - 4))
         for phase, coverage in smile_scores.items():
             bar_len = int(coverage / 5)
             bar = "#" * bar_len + "." * (20 - bar_len)
-            status = "OK" if coverage >= 30 else "GAP"
-            lines.append(f"  {phase:<26} {coverage:>3.0f}%  [{bar}]  {status}")
+            status = "STRONG" if coverage >= 50 else ("OK" if coverage >= 25 else "GAP")
+            lines.append(f"  {phase:<28} {coverage:>3.0f}%  [{bar}]  {status}")
         lines.append("")
 
     # --- Severity ---
-    lines.append("  SEVERITY")
+    lines.append("  SEVERITY SUMMARY")
     lines.append("  " + "-" * (w - 4))
+    icons = {"CRITICAL": "!!", "HIGH": "! ", "MEDIUM": "~ ", "LOW": "  "}
     for sev in ["CRITICAL", "HIGH", "MEDIUM", "LOW"]:
         c = severity_counts.get(sev, 0)
-        icon = {"CRITICAL": "!!", "HIGH": "! ", "MEDIUM": "~ ", "LOW": "  "}
-        lines.append(f"  {icon[sev]} {sev:<12} {c}")
+        lines.append(f"  {icons[sev]} {sev:<12} {c}")
     lines.append("")
 
-    # --- Top patterns ---
     lines.append("  TOP ISSUES")
     lines.append("  " + "-" * (w - 4))
     for pattern, count in pattern_counts.most_common(15):
@@ -1019,8 +1911,7 @@ def format_report(result, pdf_path, page_count, smile_scores=None, has_call=Fals
     lines.append("=" * w)
     lines.append("  FINDINGS BY LAYER")
     lines.append("=" * w)
-
-    for layer in [1, 2, 3]:
+    for layer in [1, 2, 3, 4]:
         layer_findings = [f for f in result.findings if f.layer == layer]
         if not layer_findings:
             continue
@@ -1042,91 +1933,130 @@ def format_report(result, pdf_path, page_count, smile_scores=None, has_call=Fals
     lines.append("  PRE-SUBMISSION CHECKLIST")
     lines.append("=" * w)
     checklist = [
-        "SMILE: Proposal leads with impact, not technology",
-        "SMILE: All 6 phases addressed (Reality→Wisdom)",
-        "SMILE: Three perspectives covered (People/Systems/Planet)",
-        "CALL: Every expected outcome mapped to a WP/task",
+        "STRUCTURAL: ≥3 partners from ≥3 eligible countries confirmed",
+        "STRUCTURAL: All WP end months within project duration",
+        "STRUCTURAL: Every deliverable ID in text also in deliverable table",
+        "STRUCTURAL: No milestones that are meetings/workshops",
+        "STRUCTURAL: No partner with zero PMs leads tasks",
+        "STRUCTURAL: Subcontracting <30% of total budget (or justified)",
+        "STRUCTURAL: Management WP 5-10% of total effort",
+        "STRUCTURAL: Abstract has problem/solution/impact structure (1500-2000 chars)",
+        "STRUCTURAL: Gender balance in named researchers checked",
+        "STRUCTURAL: Ethics self-assessment complete",
+        "CALL: Every expected outcome bullet maps to ≥1 deliverable",
         "CALL: Call terminology mirrored (not paraphrased)",
-        "CALL: TRL targets align with action type",
+        "CALL: TRL targets align with call specification",
+        "CALL: Action type (RIA/IA/CSA) consistent with TRL targets",
         "CALL: Referenced EU policies match call text",
         "FIELD: ≥30% citations from last 2 years",
-        "FIELD: Seminal/foundational work cited",
+        "FIELD: Seminal/foundational work cited (pre-2020)",
         "FIELD: Prior EU-funded projects referenced",
-        "FIELD: Relevant standards bodies mentioned",
-        "FIELD: Forward vision (roadmap, post-project)",
-        "All placeholders removed",
-        "Every KPI has a cited baseline",
-        "Every partner: profile + prior work + personnel",
-        "Every task passes Monday morning test",
-        "No time-travel deliverables",
-        "Each pilot has unique SSH analysis",
-        "Milestones are achievements, not meetings",
-        "Risk table: technical + management + market",
-        "Outputs ≠ outcomes ≠ impacts",
-        "Exploitation names partner + product + market",
-        "Part B within page limit (40 pages RIA/IA)",
-        "No zero-PM task leads",
-        "Spellcheck + final read by non-author",
+        "FIELD: Specific standards bodies named (ISO/IEEE/W3C/ETSI)",
+        "FIELD: Forward vision present (roadmap, post-project, 2030+)",
+        "SMILE: Impact first, data last — opening leads with problem",
+        "SMILE: All 6 phases addressed (Reality→Wisdom)",
+        "SMILE: Three perspectives covered (People/Systems/Planet)",
+        "SMILE: Stakeholder table/matrix present (Reality Emulation)",
+        "SMILE: Validation methodology defined (Concurrent Engineering)",
+        "SMILE: Specific ontologies/standards named (Collective Intelligence)",
+        "SMILE: Decision support outputs defined (Contextual Intelligence)",
+        "SMILE: AI maturity path described (Continuous Intelligence)",
+        "SMILE: Open source/sustainability plan (Perpetual Wisdom)",
+        "ANTI: All placeholders removed ([TBD], [insert], [XX])",
+        "ANTI: Every KPI has a cited baseline + measurement method",
+        "ANTI: Each partner has ≥1 paragraph with profile + personnel",
+        "ANTI: WPs structured by objective, not by partner territory",
+        "ANTI: Risk table covers technical + management + market risks",
+        "ANTI: Outputs ≠ outcomes ≠ impacts (defined separately)",
+        "ANTI: Exploitation names partner + product + market + revenue model",
+        "ANTI: Dissemination and exploitation treated separately",
+        "ANTI: Governance has conflict resolution + IP escalation path",
+        "ANTI: Commercial competitors named in SotA section",
+        "ANTI: No time-travel deliverables (integration before components)",
+        "ANTI: Page limit checked: 40 for RIA/IA, 25 for CSA",
+        "ANTI: Acronym list complete, all defined at first use",
+        "ANTI: AI tool usage disclosed if AI used in writing",
+        "BUDGET: Personnel cost per PM within country benchmarks",
+        "FINAL: Spellcheck + read by non-author reviewer",
     ]
     for item in checklist:
         lines.append(f"  [ ] {item}")
+    lines.append("")
 
     return "\n".join(lines)
 
 
 # ============================================================
-# MAIN
+# MAIN ORCHESTRATION
 # ============================================================
 
-def run_analysis(pdf_path, call_path=None, verbose=False):
+def run_analysis(pdf_path: str, call_path: Optional[str] = None,
+                 verbose: bool = False, budget_mode: bool = False):
     pages, page_count = extract_text(pdf_path)
-    start = find_part_b_start(pages)
+
     if verbose:
-        print(f"  Pages: {page_count}, Part B: ~p.{start}")
+        print("  Pass 1: Extraction...")
+    model = extract_proposal_model(pages, page_count)
+
+    if verbose:
+        print(model.summary())
+        print(f"\n  Part B starts at page {model.part_b_start_page}")
 
     result = AnalysisResult()
+
     call_text = None
     if call_path:
-        call_text = extract_call_from_pdf(call_path)
+        call_text = load_call_text(call_path)
         if verbose:
             print(f"  Call text: {len(call_text)} chars loaded")
 
-    # Layer 1: Call Alignment
     if verbose:
-        print("  Layer 1: Call Alignment...")
-    check_call_alignment(pages, result, start, call_text)
+        print("\n  Pass 2: Analysis...")
 
-    # Layer 2: Field Awareness + SMILE
+    # Layer 1: Structural Integrity
     if verbose:
-        print("  Layer 2: Field Awareness + SMILE...")
-    check_field_awareness(pages, result, start)
-    smile_scores = check_smile_alignment(pages, result, start)
+        print("  Layer 1: Structural Integrity...")
+    check_structural_integrity(model, result)
 
-    # Layer 3: Anti-Patterns
+    # Layer 2: Call Alignment
+    if verbose:
+        print("  Layer 2: Call Alignment...")
+    check_call_alignment(model, result, call_text)
+
+    # Layer 3: Field & SMILE
+    if verbose:
+        print("  Layer 3: Field & SMILE...")
+    check_field_awareness(model, result)
+    smile_scores = check_smile_alignment(model, result)
+
+    # Layer 4: Anti-Patterns
+    start = model.part_b_start_page
     detectors = [
         ("Placeholders", lambda: check_unfilled_placeholders(pages, result, start)),
         ("Buzzwords", lambda: check_buzzwords(pages, result, start)),
         ("Opening", lambda: check_opening(pages, result, start)),
         ("Baselines", lambda: check_baselines(pages, result, start)),
         ("Partners", lambda: check_ghost_partners(pages, result, start)),
-        ("Copy-paste", lambda: check_copy_paste(pages, result, start)),
-        ("Risks", lambda: check_risks(pages, result, start)),
+        ("Copy-paste SSH", lambda: check_copy_paste_ssh(pages, result, start)),
+        ("Risks", lambda: check_risks(pages, result, start, model)),
         ("Timeline", lambda: check_timeline(pages, result, start)),
         ("Exploitation", lambda: check_exploitation(pages, result, start)),
         ("Market", lambda: check_market(pages, result, start)),
-        ("Milestones", lambda: check_meeting_milestones(pages, result, start)),
+        ("Meeting milestones", lambda: check_meeting_milestones(pages, result, start)),
         ("Output/Outcome", lambda: check_output_outcome_impact(pages, result, start)),
-        ("Page count", lambda: check_page_count(pages, result, start)),
-        ("Budget ratios", lambda: check_budget_ratios(pages, result, start)),
         ("D&E conflation", lambda: check_dissemination_exploitation_conflation(pages, result, start)),
-        ("Zero-PM leads", lambda: check_zero_pm_wp_lead(pages, result, start)),
-        ("State of Art", lambda: check_sota(pages, result, start)),
         ("Governance", lambda: check_governance(pages, result, start)),
-        ("Acronyms", lambda: check_acronyms(pages, result, start)),
+        ("SotA", lambda: check_sota(pages, result, start)),
+        ("Partner-driven WPs", lambda: check_partner_driven_wps(model, result)),
+        ("AI disclosure", lambda: check_ai_disclosure(model, result)),
+        ("Lump-sum", lambda: check_lump_sum(pages, result, start)),
+        ("Acronyms", lambda: check_acronyms(model, result)),
+        ("Budget narrative", lambda: check_budget_narrative(pages, result, start)),
+        ("Consortium diversity", lambda: check_consortium_diversity(model, result)),
     ]
 
     if verbose:
-        print("  Layer 3: Anti-Patterns...")
+        print("  Layer 4: Anti-Patterns...")
     for name, fn in detectors:
         try:
             fn()
@@ -1136,59 +2066,115 @@ def run_analysis(pdf_path, call_path=None, verbose=False):
             if verbose:
                 print(f"    x {name}: {e}")
 
-    return result, page_count, smile_scores
+    # Budget mode: additional budget-focused checks
+    if budget_mode:
+        if verbose:
+            print("  Budget mode: additional checks...")
+        run_budget_analysis(model, result)
+
+    return result, model, smile_scores
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="C.R.U.C.I.B.L.E. — Consortia Review Under Controlled Interrogation, Before Live Evaluation",
-        epilog="Built on SMILE methodology. Impact first, data last.",
+        description="C.R.U.C.I.B.L.E. v3.0.0 — Full Horizon Europe proposal analyzer",
+        epilog="Two-pass: Extract → Analyze. Built on SMILE methodology. Impact first, data last.",
     )
     parser.add_argument("pdf", help="Path to proposal PDF")
-    parser.add_argument("--call", "-c", metavar="PATH", help="Call/topic text file or PDF (enables Layer 1)")
-    parser.add_argument("--verbose", "-v", action="store_true")
-    parser.add_argument("--json", "-j", metavar="PATH", help="Save JSON output")
-    parser.add_argument("--output", "-o", metavar="PATH", help="Save report to file")
+    parser.add_argument("--call", "-c", metavar="PATH",
+                        help="Call/topic text file or PDF (enables Layer 2)")
+    parser.add_argument("--verbose", "-v", action="store_true",
+                        help="Show extraction and analysis progress")
+    parser.add_argument("--json", "-j", metavar="PATH",
+                        help="Save full JSON output to file")
+    parser.add_argument("--output", "-o", metavar="PATH",
+                        help="Save text report to file")
+    parser.add_argument("--budget", "-b", action="store_true",
+                        help="Enable budget analysis mode (additional cost checks)")
+    parser.add_argument("--model", "-m", action="store_true",
+                        help="Print the extracted ProposalModel and exit (debug)")
 
     args = parser.parse_args()
 
     if not Path(args.pdf).exists():
-        print(f"File not found: {args.pdf}")
+        print(f"ERROR: File not found: {args.pdf}")
         sys.exit(1)
 
     print(f"\n  C.R.U.C.I.B.L.E. v{__version__}")
     print(f"  Analyzing: {args.pdf}")
     if args.call:
         print(f"  Call text: {args.call}")
+    if args.budget:
+        print("  Budget mode: enabled")
 
-    result, page_count, smile_scores = run_analysis(args.pdf, args.call, args.verbose)
-    report = format_report(result, args.pdf, page_count, smile_scores, bool(args.call))
+    result, model, smile_scores = run_analysis(
+        args.pdf, args.call, args.verbose, args.budget
+    )
+
+    if args.model:
+        print("\n" + model.summary())
+        sys.exit(0)
+
+    report = format_report(result, args.pdf, model, smile_scores,
+                           bool(args.call), args.budget)
     print(report)
 
     if args.output:
         Path(args.output).write_text(report, encoding='utf-8')
-        print(f"\n  Report: {args.output}")
+        print(f"\n  Report saved: {args.output}")
 
     if args.json:
-        scores = estimate_scores(result)
+        scores = estimate_scores(result, model)
         data = {
             "tool": "CRUCIBLE",
             "version": __version__,
             "file": str(args.pdf),
             "call_provided": bool(args.call),
-            "pages": page_count,
+            "budget_mode": args.budget,
+            "pages": model.total_pages,
+            "model": {
+                "acronym": model.acronym,
+                "title": model.title,
+                "duration_months": model.duration_months,
+                "call_id": model.call_id,
+                "action_type": model.action_type,
+                "partner_count": len(model.partners),
+                "partners": [
+                    {"name": p.name, "pic": p.pic, "country": p.country,
+                     "is_sme": p.is_sme, "person_months": p.person_months}
+                    for p in model.partners
+                ],
+                "wp_count": len(model.work_packages),
+                "work_packages": [
+                    {"number": wp.number, "title": wp.title, "lead": wp.lead,
+                     "start_month": wp.start_month, "end_month": wp.end_month}
+                    for wp in model.work_packages
+                ],
+                "deliverable_count": len(model.deliverables),
+                "milestone_count": len(model.milestones),
+                "citation_count": len(model.citations_found),
+                "kpi_count": len(model.kpis_found),
+                "budget_total": model.budget_total,
+                "budget_eu": model.budget_eu,
+            },
             "scores": scores,
             "total": sum(scores.values()),
             "smile_coverage": smile_scores,
             "findings": [
-                {"pattern": f.pattern, "severity": f.severity, "page": f.page,
-                 "text": f.text, "suggestion": f.suggestion,
-                 "category": f.category, "layer": f.layer}
+                {
+                    "pattern": f.pattern,
+                    "severity": f.severity,
+                    "page": f.page,
+                    "text": f.text,
+                    "suggestion": f.suggestion,
+                    "category": f.category,
+                    "layer": f.layer,
+                }
                 for f in result.findings
             ],
         }
         Path(args.json).write_text(json.dumps(data, indent=2), encoding='utf-8')
-        print(f"  JSON:   {args.json}")
+        print(f"  JSON saved: {args.json}")
 
 
 if __name__ == "__main__":
