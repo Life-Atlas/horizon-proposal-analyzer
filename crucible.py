@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-C.R.U.C.I.B.L.E. v4.0.0
+C.R.U.C.I.B.L.E. v5.0.0
 Consortia Review Under Controlled Interrogation — Before Live Evaluation
 
 Two-pass full-proposal analyzer for Horizon Europe.
-Now with EIC Pathfinder Open call-specific evaluation and pre-flight checklist.
+EIC Pathfinder Open call-specific evaluation, pre-flight checklist,
+PESTLE+D regional analysis, EU Interoperability Framework, and stress testing.
 
 Pass 0: PRE-FLIGHT — 10 gatekeeper questions before analysis runs
 Pass 1: EXTRACTION — build a structured ProposalModel from the entire PDF
@@ -14,6 +15,9 @@ Pass 2: ANALYSIS — four layers
   Layer 3: FIELD & SMILE         — field awareness + SMILE methodology
   Layer 4: ANTI-PATTERNS         — 45+ mechanical checks
 Pass 3: STRATEGIC SCORING — time to market, innovation depth, partnerships, etc.
+Pass 4: PESTLE+D — regional environment analysis across 8 dimensions
+Pass 5: EU INTEROPERABILITY FRAMEWORK — 7-layer interoperability assessment
+Pass 6: CONCEPT / CONTEXT / CRISIS — triple stress test
 
 Usage:
   python crucible.py proposal.pdf
@@ -41,7 +45,7 @@ except ImportError:
     print("ERROR: pymupdf required. Install with: pip install pymupdf")
     sys.exit(1)
 
-__version__ = "4.0.0"
+__version__ = "5.1.0"
 
 
 # ============================================================
@@ -2205,6 +2209,111 @@ def check_consortium_diversity(model: ProposalModel, result: AnalysisResult):
         pass
 
 
+def check_evaluator_readability(pages: dict, result: AnalysisResult, start: int):
+    """Evaluators read 50+ proposals. If yours is hard to parse, it scores lower."""
+    cat = "Anti-Pattern"
+    layer = 4
+    text = get_part_b_text(pages, start)
+    if not text:
+        return
+
+    sentences = re.split(r'[.!?]+', text)
+    sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
+    if not sentences:
+        return
+
+    long_sentences = [s for s in sentences if len(s.split()) > 50]
+    avg_words = sum(len(s.split()) for s in sentences) / len(sentences)
+
+    if len(long_sentences) > len(sentences) * 0.15:
+        result.add("Wall of Text", "MEDIUM", start,
+            f"{len(long_sentences)} sentences over 50 words ({len(long_sentences)*100//len(sentences)}%). "
+            f"Average sentence: {avg_words:.0f} words. Evaluators skim — they'll miss your point.",
+            "Target 20-25 words per sentence. Use bullets for lists. One idea per sentence.",
+            cat, layer)
+
+    paragraphs = [p.strip() for p in text.split('\n\n') if len(p.strip()) > 50]
+    long_paras = [p for p in paragraphs if len(p.split()) > 200]
+    if long_paras and len(long_paras) > len(paragraphs) * 0.2:
+        result.add("Dense Paragraphs", "LOW", start,
+            f"{len(long_paras)} paragraphs over 200 words. No evaluator reads a 200-word block carefully.",
+            "Break into sub-sections with headers. Use visual structure: tables, bullets, bold key terms.",
+            cat, layer)
+
+
+def check_theory_of_change(pages: dict, result: AnalysisResult, start: int):
+    """Impact section must show: Activities → Outputs → Outcomes → Impacts. Not just list outputs."""
+    cat = "Anti-Pattern"
+    layer = 4
+    text = get_part_b_text(pages, start).lower()
+    if not text:
+        return
+
+    toc_markers = {
+        'activities': bool(re.search(r'activit(y|ies)', text)),
+        'outputs': bool(re.search(r'output', text)),
+        'outcomes': bool(re.search(r'outcome', text)),
+        'impacts': bool(re.search(r'impact', text)),
+    }
+    present = sum(toc_markers.values())
+
+    has_toc_phrase = any(phrase in text for phrase in [
+        'theory of change', 'logic model', 'impact pathway',
+        'intervention logic', 'causal chain', 'impact logic',
+    ])
+
+    if present < 3 and not has_toc_phrase:
+        result.add("Missing Theory of Change", "HIGH", start,
+            f"Impact section lacks a clear logic chain. Found: {', '.join(k for k, v in toc_markers.items() if v)}. "
+            "Missing: {}.".format(', '.join(k for k, v in toc_markers.items() if not v)),
+            "Add an explicit Theory of Change: Activities → Outputs → Outcomes → Impacts. "
+            "Evaluators look for this causal chain in Section 2.",
+            cat, layer)
+    elif not has_toc_phrase and present >= 3:
+        result.add("Implicit Theory of Change", "LOW", start,
+            "All four levels mentioned but no explicit 'theory of change' or 'impact pathway' diagram referenced.",
+            "Name it explicitly. Add a ToC figure — evaluators scan for the diagram.",
+            cat, layer)
+
+
+def check_gender_dimension(pages: dict, result: AnalysisResult, start: int, model: ProposalModel):
+    """Cross-cutting: gender is scored in all HE proposals since 2021."""
+    cat = "Anti-Pattern"
+    layer = 4
+    text = get_part_b_text(pages, start).lower()
+    if not text:
+        return
+
+    gender_markers = [
+        'gender', 'sex-disaggregated', 'gender dimension',
+        'gender analysis', 'gender balance', 'gender equality',
+        'gep', 'gender equality plan', 'inclusiv',
+    ]
+    found = [m for m in gender_markers if m in text]
+
+    if not found:
+        result.add("Missing Gender Dimension", "HIGH", start,
+            "No mention of gender in the proposal. Since 2021, all Horizon Europe proposals "
+            "must address the gender dimension in research content AND team composition.",
+            "Add: (1) gender balance in team/governance, (2) sex/gender analysis in research design, "
+            "(3) reference your institution's Gender Equality Plan (GEP). This is a scored cross-cutting priority.",
+            cat, layer)
+    elif len(found) <= 2:
+        has_gep = 'gender equality plan' in text or 'gep' in text
+        has_content = 'gender dimension' in text or 'sex-disaggregated' in text
+        if not has_gep or not has_content:
+            missing = []
+            if not has_gep:
+                missing.append("GEP reference")
+            if not has_content:
+                missing.append("gender in research content")
+            result.add("Shallow Gender Treatment", "MEDIUM", start,
+                f"Gender mentioned but coverage is thin. Missing: {', '.join(missing)}.",
+                "Evaluators check for: (1) GEP at coordinator institution, (2) gender in research content/methodology, "
+                "(3) gender balance in named personnel. Tick all three.",
+                cat, layer)
+
+
 # ============================================================
 # PRE-FLIGHT RUNNER
 # ============================================================
@@ -2830,6 +2939,9 @@ def run_analysis(pdf_path: str, call_path: Optional[str] = None,
         ("Acronyms", lambda: check_acronyms(model, result)),
         ("Budget narrative", lambda: check_budget_narrative(pages, result, start)),
         ("Consortium diversity", lambda: check_consortium_diversity(model, result)),
+        ("Readability", lambda: check_evaluator_readability(pages, result, start)),
+        ("Theory of Change", lambda: check_theory_of_change(pages, result, start)),
+        ("Gender dimension", lambda: check_gender_dimension(pages, result, start, model)),
     ]
 
     if verbose:
