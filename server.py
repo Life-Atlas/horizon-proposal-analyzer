@@ -24,7 +24,7 @@ from crucible import (
 
 CORS_ORIGINS = os.getenv(
     "CRUCIBLE_CORS_ORIGINS",
-    "http://localhost:3000,http://localhost:5173,https://crucible.winniio.io"
+    "http://localhost:3000,http://localhost:5173,https://crucible.winniio.io,https://crucible-app-phi.vercel.app"
 ).split(",")
 
 MAX_FILE_SIZE = int(os.getenv("CRUCIBLE_MAX_MB", "25")) * 1024 * 1024
