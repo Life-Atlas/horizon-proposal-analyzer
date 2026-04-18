@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: crucible-api
+    runtime: python
+    repo: https://github.com/Life-Atlas/horizon-proposal-analyzer
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: CRUCIBLE_CORS_ORIGINS
+        value: http://localhost:3000,https://crucible.winniio.io,https://crucible-app-phi.vercel.app
+      - key: CRUCIBLE_MAX_MB
+        value: "25"
+      - key: PYTHON_VERSION
+        value: "3.13.0"
