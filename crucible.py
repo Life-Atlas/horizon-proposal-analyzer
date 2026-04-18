@@ -612,6 +612,420 @@ def format_future_tech_radar(scores: dict) -> list:
 
 
 # ============================================================
+# PESTLE+D — Regional Environment Analysis (8 dimensions)
+# ============================================================
+
+PESTLED_DIMENSIONS = {
+    "political": {
+        "name": "Political",
+        "description": "Government policy, regulation, political stability, trade relations",
+        "markers": ["government", "policy", "regulation", "ministry", "public sector",
+                     "eu commission", "european commission", "national", "bilateral",
+                     "geopolitic", "sovereignty", "political", "governance", "treaty",
+                     "sanctions", "diplomacy", "nato", "defence", "security policy"],
+        "weight": 15,
+    },
+    "economic": {
+        "name": "Economic",
+        "description": "Market conditions, funding, economic cycles, cost-benefit",
+        "markers": ["market", "revenue", "cost", "investment", "economic", "gdp",
+                     "funding", "budget", "commercial", "pricing", "saas", "licensing",
+                     "billion", "trillion", "growth", "recession", "inflation",
+                     "supply chain", "trade", "export"],
+        "weight": 15,
+    },
+    "social": {
+        "name": "Social",
+        "description": "Workforce, public sentiment, cultural shifts, community impact",
+        "markers": ["community", "stakeholder", "citizen", "workforce", "public",
+                     "social", "inclusion", "diversity", "engagement", "co-creation",
+                     "humanitarian", "refugee", "displacement", "wellbeing",
+                     "education", "training", "skill", "user", "adoption"],
+        "weight": 10,
+    },
+    "technological": {
+        "name": "Technological",
+        "description": "Tech maturity, infrastructure, digital transformation",
+        "markers": ["ai", "machine learning", "deep learning", "5g", "6g", "cloud",
+                     "edge", "iot", "sensor", "drone", "uav", "digital twin",
+                     "open source", "api", "platform", "standard", "interoperable",
+                     "autonomous", "automation", "quantum", "hpc", "gpu"],
+        "weight": 15,
+    },
+    "environmental": {
+        "name": "Environmental",
+        "description": "Sustainability, green deal, carbon footprint, ESG",
+        "markers": ["green deal", "sustainability", "carbon", "energy", "circular",
+                     "climate", "environmental", "emission", "renewable", "waste",
+                     "biodiversity", "esg", "life cycle", "footprint",
+                     "resource efficient", "nature-based"],
+        "weight": 10,
+    },
+    "legal": {
+        "name": "Legal",
+        "description": "IP law, data protection, compliance, regulatory frameworks",
+        "markers": ["gdpr", "regulation", "compliance", "ip", "intellectual property",
+                     "patent", "license", "apache", "cc-by", "mit", "legal",
+                     "liability", "contract", "easa", "eu regulation",
+                     "data protection", "privacy", "consent", "ethical review"],
+        "weight": 10,
+    },
+    "ethical": {
+        "name": "Ethical",
+        "description": "AI ethics, bias, responsible innovation, transparency",
+        "markers": ["ethical", "ethics", "responsible", "bias", "fairness",
+                     "transparency", "explainable", "accountab", "trust",
+                     "dual-use", "human rights", "dignity", "consent",
+                     "proportional", "non-discrimination", "audit"],
+        "weight": 10,
+    },
+    "demographic": {
+        "name": "Demographic",
+        "description": "Population trends, user demographics, workforce shifts",
+        "markers": ["population", "urban", "rural", "aging", "migration",
+                     "displacement", "reconstruction", "city", "municipality",
+                     "region", "cross-border", "local", "global",
+                     "developing", "emerging market", "infrastructure gap"],
+        "weight": 15,
+    },
+}
+
+
+def score_pestled(model) -> dict:
+    """Score proposal against PESTLE+D regional environment dimensions."""
+    text = model.full_text.lower() if model.full_text else ""
+    scores = {}
+    for dim_key, dim in PESTLED_DIMENSIONS.items():
+        found = sum(1 for m in dim["markers"] if m in text)
+        total = len(dim["markers"])
+        raw_pct = (found / total * 100) if total > 0 else 0
+        score = round(max(1.0, min(5.0, 1.0 + raw_pct * 0.04)), 1)
+        scores[dim_key] = {
+            "name": dim["name"], "description": dim["description"],
+            "score": score, "found": found, "total": total, "weight": dim["weight"],
+        }
+    weighted_sum = sum(s["score"] * s["weight"] for s in scores.values())
+    total_weight = sum(s["weight"] for s in scores.values())
+    scores["_weighted_avg"] = round(weighted_sum / total_weight, 2) if total_weight else 0
+    scores["_coverage"] = (
+        "COMPREHENSIVE" if scores["_weighted_avg"] >= 4.0
+        else "ADEQUATE" if scores["_weighted_avg"] >= 3.0
+        else "GAPS DETECTED"
+    )
+    return scores
+
+
+def format_pestled(scores: dict) -> list:
+    """Format PESTLE+D analysis as report lines."""
+    lines = []
+    lines.append("  PESTLE+D REGIONAL ENVIRONMENT ANALYSIS")
+    lines.append("  " + "-" * 72)
+    lines.append("  Does the proposal understand its operating environment?")
+    lines.append("")
+    for key, dim in sorted(
+        [(k, v) for k, v in scores.items() if not k.startswith("_")],
+        key=lambda x: x[1]["weight"], reverse=True
+    ):
+        filled = int((dim["score"] - 1.0) / 4.0 * 16)
+        bar = "#" * filled + "." * (16 - filled)
+        lines.append(f"  {dim['name']:<16} {dim['score']}/5.0  [{bar}]  "
+                      f"({dim['found']}/{dim['total']}, w={dim['weight']}%)")
+    lines.append("")
+    lines.append(f"  PESTLE+D WEIGHTED AVG:  {scores['_weighted_avg']:.2f} / 5.00  "
+                  f"[{scores['_coverage']}]")
+    weakest = min(
+        [(k, v) for k, v in scores.items() if not k.startswith("_")],
+        key=lambda x: x[1]["score"]
+    )
+    lines.append(f"  Weakest: {weakest[1]['name']} ({weakest[1]['score']}/5.0)")
+    lines.append("")
+    return lines
+
+
+# ============================================================
+# EU INTEROPERABILITY FRAMEWORK — 7-layer assessment
+# ============================================================
+
+EU_INTEROP_LAYERS = {
+    "technical": {
+        "name": "Technical Interoperability",
+        "description": "Infrastructure, protocols, APIs, data formats",
+        "markers": ["api", "rest", "protocol", "tcp", "http", "mqtt", "grpc",
+                     "docker", "kubernetes", "microservice", "cloud", "edge",
+                     "deployment", "infrastructure", "server", "endpoint",
+                     "bandwidth", "latency", "throughput"],
+        "weight": 15,
+    },
+    "syntactic": {
+        "name": "Syntactic Interoperability",
+        "description": "Data formats, encoding, schema, serialization",
+        "markers": ["json", "xml", "csv", "geojson", "citygml", "ifc", "gltf",
+                     "protobuf", "parquet", "schema", "format", "encoding",
+                     "serializ", "data model", "data structure", "binary",
+                     "ascii", "utf"],
+        "weight": 15,
+    },
+    "semantic": {
+        "name": "Semantic Interoperability",
+        "description": "Shared meaning, ontologies, taxonomies, linked data",
+        "markers": ["ontology", "taxonomy", "semantic", "linked data", "rdf",
+                     "knowledge graph", "vocabulary", "terminology", "meaning",
+                     "classification", "category", "itu-r", "3gpp", "iso",
+                     "standardiz", "harmoniz", "mapping", "crosswalk"],
+        "weight": 20,
+    },
+    "organizational": {
+        "name": "Organizational Interop",
+        "description": "Governance, processes, roles, cross-org coordination",
+        "markers": ["governance", "consortium", "partner", "coordinator",
+                     "work package", "steering", "advisory", "board",
+                     "process", "workflow", "role", "responsibility",
+                     "agreement", "mou", "contract", "sla"],
+        "weight": 10,
+    },
+    "legal": {
+        "name": "Legal Interoperability",
+        "description": "Licensing, IP, data rights, regulatory compliance",
+        "markers": ["license", "apache", "cc-by", "mit", "open source",
+                     "gdpr", "regulation", "compliance", "ip", "patent",
+                     "data protection", "privacy", "consent", "legal",
+                     "liability", "easa", "eu regulation"],
+        "weight": 15,
+    },
+    "contextual": {
+        "name": "Contextual Interoperability",
+        "description": "Domain-specific context, use-case awareness, situational fit",
+        "markers": ["use case", "scenario", "context", "domain", "vertical",
+                     "telecom", "urban", "reconstruction", "disaster",
+                     "mobility", "defence", "construction", "planning",
+                     "mission", "operational", "field", "deployment"],
+        "weight": 15,
+    },
+    "social": {
+        "name": "Social Interoperability",
+        "description": "Trust, adoption, community, stakeholder buy-in",
+        "markers": ["trust", "adoption", "community", "stakeholder", "user",
+                     "engagement", "co-creation", "feedback", "training",
+                     "capacity building", "hackathon", "workshop", "outreach",
+                     "dissemination", "accessibility", "inclusion"],
+        "weight": 10,
+    },
+}
+
+
+def score_eu_interop(model) -> dict:
+    """Score proposal against EU Interoperability Framework layers."""
+    text = model.full_text.lower() if model.full_text else ""
+    scores = {}
+    for layer_key, layer in EU_INTEROP_LAYERS.items():
+        found = sum(1 for m in layer["markers"] if m in text)
+        total = len(layer["markers"])
+        raw_pct = (found / total * 100) if total > 0 else 0
+        score = round(max(1.0, min(5.0, 1.0 + raw_pct * 0.04)), 1)
+        scores[layer_key] = {
+            "name": layer["name"], "description": layer["description"],
+            "score": score, "found": found, "total": total, "weight": layer["weight"],
+        }
+    weighted_sum = sum(s["score"] * s["weight"] for s in scores.values())
+    total_weight = sum(s["weight"] for s in scores.values())
+    scores["_weighted_avg"] = round(weighted_sum / total_weight, 2) if total_weight else 0
+    scores["_maturity"] = (
+        "INTEROP-READY" if scores["_weighted_avg"] >= 4.0
+        else "PARTIALLY INTEROPERABLE" if scores["_weighted_avg"] >= 3.0
+        else "INTEGRATION RISK"
+    )
+    return scores
+
+
+def format_eu_interop(scores: dict) -> list:
+    """Format EU Interoperability Framework as report lines."""
+    lines = []
+    lines.append("  EU INTEROPERABILITY FRAMEWORK (7-layer assessment)")
+    lines.append("  " + "-" * 72)
+    lines.append("  Will this proposal's outputs plug into EU infrastructure?")
+    lines.append("")
+    for key, layer in sorted(
+        [(k, v) for k, v in scores.items() if not k.startswith("_")],
+        key=lambda x: x[1]["weight"], reverse=True
+    ):
+        filled = int((layer["score"] - 1.0) / 4.0 * 16)
+        bar = "#" * filled + "." * (16 - filled)
+        lines.append(f"  {layer['name']:<32} {layer['score']}/5.0  [{bar}]  "
+                      f"({layer['found']}/{layer['total']}, w={layer['weight']}%)")
+    lines.append("")
+    lines.append(f"  EU INTEROP WEIGHTED AVG:  {scores['_weighted_avg']:.2f} / 5.00  "
+                  f"[{scores['_maturity']}]")
+    weakest = min(
+        [(k, v) for k, v in scores.items() if not k.startswith("_")],
+        key=lambda x: x[1]["score"]
+    )
+    lines.append(f"  Weakest: {weakest[1]['name']} ({weakest[1]['score']}/5.0)")
+    lines.append("")
+    return lines
+
+
+# ============================================================
+# CONCEPT / CONTEXT / CRISIS — Triple Stress Test
+# ============================================================
+
+STRESS_TEST = {
+    "concept": {
+        "name": "CONCEPT \u2014 Does the core idea hold?",
+        "checks": [
+            {"id": "C1", "question": "Is the core thesis falsifiable?",
+             "positive": ["proof of principle", "hypothesis", "falsifiable", "validate",
+                          "benchmark", "measurable", "quantif", "threshold", "kpi"],
+             "negative": ["will revolutionize", "paradigm shift", "game-changing", "unprecedented"],
+             "weight": 20},
+            {"id": "C2", "question": "Does it solve a problem people actually have?",
+             "positive": ["bottleneck", "cost", "person-hours", "manual", "time-consuming",
+                          "gap", "unmet need", "pain point", "customer", "user need", "operator"],
+             "negative": ["solution looking for", "theoretically"],
+             "weight": 20},
+            {"id": "C3", "question": "Is there evidence it CAN work (not just should)?",
+             "positive": ["demonstrated", "preliminary", "pilot", "prototype", "testbed",
+                          "validated", "feasibility", "proof", "existing pipeline", "pre-publication"],
+             "negative": ["we believe", "we expect", "we anticipate", "we hope", "should work"],
+             "weight": 20},
+            {"id": "C4", "question": "What's the moat \u2014 why can't someone copy this?",
+             "positive": ["network effect", "accumulating", "first-mover", "benchmark dataset",
+                          "standards contribution", "open-source", "ecosystem", "compounding",
+                          "cross-validated", "persistent"],
+             "negative": ["proprietary advantage", "secret sauce"],
+             "weight": 15},
+            {"id": "C5", "question": "Is the team the RIGHT team for this problem?",
+             "positive": ["track record", "prior project", "key personnel", "published",
+                          "deployed", "operator", "200+", "experience", "expertise", "cv"],
+             "negative": ["to be hired", "to be recruited", "tbd"],
+             "weight": 25},
+        ],
+    },
+    "context": {
+        "name": "CONTEXT \u2014 Does it fit the current environment?",
+        "checks": [
+            {"id": "X1", "question": "Is the timing right? (convergence)",
+             "positive": ["why now", "converging", "for the first time", "recently",
+                          "2023", "2024", "2025", "emerging", "newly available", "matured"],
+             "negative": ["long established", "decades of research"],
+             "weight": 20},
+            {"id": "X2", "question": "Does it align with EU strategic priorities?",
+             "positive": ["green deal", "digital decade", "eu regulation", "horizon europe",
+                          "eic", "sovereignty", "strategic autonomy", "open science", "fair",
+                          "ukraine", "reconstruction", "eu facility"],
+             "negative": [],
+             "weight": 20},
+            {"id": "X3", "question": "Is the regulatory environment ready?",
+             "positive": ["easa", "u-space", "gdpr", "eu regulation", "ai act", "data act",
+                          "standards body", "3gpp", "etsi", "ogc", "iso", "regulatory framework"],
+             "negative": ["regulatory uncertainty", "unclear legal"],
+             "weight": 15},
+            {"id": "X4", "question": "Is there real market pull (not just push)?",
+             "positive": ["customer", "operator", "letter of intent", "captive", "first customer",
+                          "demand", "bottleneck", "willingness to pay", "budget", "procurement"],
+             "negative": ["if adopted", "potential market"],
+             "weight": 20},
+            {"id": "X5", "question": "Does consortium map to problem geography?",
+             "positive": ["uk", "sweden", "ukraine", "cambridge", "kharkiv", "municipality",
+                          "field deployment", "local partner", "ground truth", "community"],
+             "negative": ["remote monitoring", "desk study"],
+             "weight": 25},
+        ],
+    },
+    "crisis": {
+        "name": "CRISIS \u2014 What happens when things go wrong?",
+        "checks": [
+            {"id": "R1", "question": "What if the primary approach fails?",
+             "positive": ["fallback", "alternative", "contingency", "plan b", "mitigation",
+                          "risk", "failure mode", "degraded", "partial success", "pivot"],
+             "negative": ["no alternative", "critical dependency"],
+             "weight": 25},
+            {"id": "R2", "question": "What if a key partner drops out?",
+             "positive": ["deputy", "named deputy", "backup", "redundancy", "modular",
+                          "replaceable", "distributed", "no single point", "key person risk"],
+             "negative": ["entirely depends on", "sole provider"],
+             "weight": 20},
+            {"id": "R3", "question": "What if the geopolitical context changes?",
+             "positive": ["dual-site", "controlled baseline", "cambridge", "alternative site",
+                          "conflict", "contested", "airspace restriction", "ground-based", "fallback"],
+             "negative": ["assumes stability", "assumes access"],
+             "weight": 20},
+            {"id": "R4", "question": "What if a competitor publishes first?",
+             "positive": ["open-source", "benchmark dataset", "standards", "community",
+                          "network effect", "accumulating", "infrastructure", "not application", "open data"],
+             "negative": ["proprietary", "first-to-patent"],
+             "weight": 15},
+            {"id": "R5", "question": "What if funding is cut or delayed?",
+             "positive": ["phase", "gate", "milestone", "self-fund", "commercial", "revenue",
+                          "phased", "modular", "incremental", "minimum viable"],
+             "negative": ["requires full funding", "all-or-nothing"],
+             "weight": 20},
+        ],
+    },
+}
+
+
+def score_stress_test(model) -> dict:
+    """Run Concept/Context/Crisis stress test on proposal."""
+    text = model.full_text.lower() if model.full_text else ""
+    scores = {}
+    for test_key, test in STRESS_TEST.items():
+        check_scores = {}
+        for check in test["checks"]:
+            pos_found = sum(1 for m in check["positive"] if m in text)
+            neg_found = sum(1 for m in check["negative"] if m in text)
+            bonus = min(1.5, pos_found * 0.15)
+            penalty = neg_found * 0.3
+            score = round(max(1.0, min(5.0, 3.0 + bonus - penalty)), 1)
+            check_scores[check["id"]] = {
+                "question": check["question"], "score": score,
+                "pos_found": pos_found, "neg_found": neg_found, "weight": check["weight"],
+            }
+        weighted_sum = sum(c["score"] * c["weight"] for c in check_scores.values())
+        total_weight = sum(c["weight"] for c in check_scores.values())
+        avg = round(weighted_sum / total_weight, 2) if total_weight else 0
+        scores[test_key] = {"name": test["name"], "checks": check_scores, "avg": avg}
+    overall = round(sum(s["avg"] for s in scores.values()) / len(scores), 2)
+    scores["_overall"] = overall
+    scores["_verdict"] = (
+        "STRESS-TESTED" if overall >= 4.0
+        else "PARTIALLY RESILIENT" if overall >= 3.0
+        else "FRAGILE"
+    )
+    return scores
+
+
+def format_stress_test(scores: dict) -> list:
+    """Format Concept/Context/Crisis stress test as report lines."""
+    lines = []
+    lines.append("  CONCEPT / CONTEXT / CRISIS \u2014 TRIPLE STRESS TEST")
+    lines.append("  " + "-" * 72)
+    lines.append("  Brutal honesty: does this survive scrutiny?")
+    lines.append("")
+    for test_key in ["concept", "context", "crisis"]:
+        test = scores[test_key]
+        avg = test["avg"]
+        filled = int((avg - 1.0) / 4.0 * 20)
+        bar = "#" * filled + "." * (20 - filled)
+        lines.append(f"  {test['name']}")
+        lines.append(f"  AVG: {avg:.1f}/5.0  [{bar}]")
+        for check_id, check in test["checks"].items():
+            cf = int((check["score"] - 1.0) / 4.0 * 12)
+            cb = "#" * cf + "." * (12 - cf)
+            lines.append(f"    {check_id} {check['question'][:50]:<50} "
+                          f"{check['score']}/5.0 [{cb}]")
+        lines.append("")
+    lines.append(f"  STRESS TEST OVERALL:  {scores['_overall']:.2f} / 5.00  "
+                  f"[{scores['_verdict']}]")
+    weakest_test = min(
+        [(k, v) for k, v in scores.items() if k in ("concept", "context", "crisis")],
+        key=lambda x: x[1]["avg"]
+    )
+    lines.append(f"  Weakest lens: {weakest_test[0].upper()} ({weakest_test[1]['avg']:.1f}/5.0)")
+    lines.append("")
+    return lines
+
+
+# ============================================================
 # DATA STRUCTURES
 # ============================================================
 
@@ -2676,7 +3090,10 @@ def format_report(result: AnalysisResult, pdf_path: str, model: ProposalModel,
                   pf_results: Optional[list] = None,
                   eic_scores: Optional[dict] = None,
                   strategic_scores: Optional[dict] = None,
-                  future_scores: Optional[dict] = None) -> str:
+                  future_scores: Optional[dict] = None,
+                  pestled_scores: Optional[dict] = None,
+                  interop_scores: Optional[dict] = None,
+                  stress_scores: Optional[dict] = None) -> str:
     scores = estimate_scores(result, model)
     total = sum(scores.values())
     severity_counts = Counter(f.severity for f in result.findings)
@@ -2739,6 +3156,46 @@ def format_report(result: AnalysisResult, pdf_path: str, model: ProposalModel,
     # --- Future Tech Radar (if available) ---
     if future_scores:
         lines.extend(format_future_tech_radar(future_scores))
+
+    # --- PESTLE+D (if available) ---
+    if pestled_scores:
+        lines.extend(format_pestled(pestled_scores))
+
+    # --- EU Interoperability Framework (if available) ---
+    if interop_scores:
+        lines.extend(format_eu_interop(interop_scores))
+
+    # --- Concept/Context/Crisis stress test (if available) ---
+    if stress_scores:
+        lines.extend(format_stress_test(stress_scores))
+
+    # --- Composite CRUCIBLE Score (if all components available) ---
+    if eic_scores and strategic_scores and future_scores and pestled_scores and interop_scores and stress_scores:
+        eic_avg = eic_scores.get("_weighted_total", 0)
+        strat_avg = strategic_scores.get("_weighted_avg", 0)
+        future_avg = future_scores.get("_weighted_avg", 0)
+        pestled_avg = pestled_scores.get("_weighted_avg", 0)
+        interop_avg = interop_scores.get("_weighted_avg", 0)
+        stress_avg = stress_scores.get("_overall", 0)
+
+        composite = (eic_avg * 0.35 + strat_avg * 0.15 + future_avg * 0.10 +
+                     pestled_avg * 0.15 + interop_avg * 0.15 + stress_avg * 0.10)
+        grade = ("S" if composite >= 4.5 else "A" if composite >= 4.0 else
+                 "B" if composite >= 3.5 else "C" if composite >= 3.0 else "D")
+
+        cf = int((composite - 1.0) / 4.0 * 30)
+        cb = "#" * cf + "." * (30 - cf)
+        lines.append("  " + "=" * (w - 4))
+        lines.append(f"  CRUCIBLE COMPOSITE SCORE")
+        lines.append(f"  {composite:.2f} / 5.00  [{cb}]  Grade: {grade}")
+        lines.append(f"    EIC Criteria (35%):    {eic_avg:.2f}")
+        lines.append(f"    Strategic (15%):       {strat_avg:.2f}")
+        lines.append(f"    Future Ready (10%):    {future_avg:.2f}")
+        lines.append(f"    PESTLE+D (15%):        {pestled_avg:.2f}")
+        lines.append(f"    EU Interop (15%):      {interop_avg:.2f}")
+        lines.append(f"    Stress Test (10%):     {stress_avg:.2f}")
+        lines.append("  " + "=" * (w - 4))
+        lines.append("")
 
     # --- Four-layer summary ---
     layer_names = {1: "Structural Integrity", 2: "Call Alignment",
@@ -2970,6 +3427,9 @@ def run_analysis(pdf_path: str, call_path: Optional[str] = None,
     eic_scores = None
     strategic_scores = None
     future_scores = None
+    pestled_scores = None
+    interop_scores = None
+    stress_scores = None
     if eic_pathfinder:
         if verbose:
             print("  Pass 3: EIC Pathfinder scoring...")
@@ -2978,13 +3438,24 @@ def run_analysis(pdf_path: str, call_path: Optional[str] = None,
         if verbose:
             print("  Pass 4: Future Tech Radar (3yr/5yr/10yr)...")
         future_scores = score_future_tech_radar(model)
+        if verbose:
+            print("  Pass 5: PESTLE+D regional environment...")
+        pestled_scores = score_pestled(model)
+        if verbose:
+            print("  Pass 6: EU Interoperability Framework...")
+        interop_scores = score_eu_interop(model)
+        if verbose:
+            print("  Pass 7: Concept/Context/Crisis stress test...")
+        stress_scores = score_stress_test(model)
 
-    return result, model, smile_scores, pf_results, eic_scores, strategic_scores, future_scores
+    return (result, model, smile_scores, pf_results, eic_scores,
+            strategic_scores, future_scores, pestled_scores,
+            interop_scores, stress_scores)
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="C.R.U.C.I.B.L.E. v4.0.0 — Full Horizon Europe proposal analyzer",
+        description="C.R.U.C.I.B.L.E. v5.0.0 — Full Horizon Europe proposal analyzer",
         epilog="Two-pass: Extract → Analyze. Built on SMILE methodology. Impact first, data last.",
     )
     parser.add_argument("pdf", help="Path to proposal PDF")
@@ -3018,7 +3489,9 @@ def main():
     if args.eic_pathfinder:
         print("  EIC Pathfinder Open mode: enabled")
 
-    result, model, smile_scores, pf_results, eic_scores, strategic_scores, future_scores = run_analysis(
+    (result, model, smile_scores, pf_results, eic_scores,
+     strategic_scores, future_scores, pestled_scores,
+     interop_scores, stress_scores) = run_analysis(
         args.pdf, args.call, args.verbose, args.budget, args.eic_pathfinder
     )
 
@@ -3029,7 +3502,8 @@ def main():
     report = format_report(result, args.pdf, model, smile_scores,
                            bool(args.call), args.budget,
                            args.eic_pathfinder, pf_results,
-                           eic_scores, strategic_scores, future_scores)
+                           eic_scores, strategic_scores, future_scores,
+                           pestled_scores, interop_scores, stress_scores)
     print(report)
 
     if args.output:
@@ -3075,6 +3549,9 @@ def main():
             "smile_coverage": smile_scores,
             "eic_pathfinder_scores": eic_scores,
             "strategic_dimensions": strategic_scores,
+            "pestled_scores": pestled_scores,
+            "eu_interop_scores": interop_scores,
+            "stress_test_scores": stress_scores,
             "pre_flight": [
                 {"id": q["id"], "question": q["question"],
                  "weight": q["weight"], "result": r}
