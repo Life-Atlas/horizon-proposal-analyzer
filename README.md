@@ -1,74 +1,17 @@
-# Horizon Europe Proposal Analyzer
+# C.R.U.C.I.B.L.E.
 
-Static analysis tool that scans Horizon Europe Part B proposals for **25 common anti-patterns** that cost points during evaluation.
+**Consortia Review Under Controlled Interrogation — Before Live Evaluation**
 
-Built from a real post-mortem analysis of a submitted Horizon Europe Innovation Action proposal. Each anti-pattern was identified by experienced evaluators and mapped to specific scoring impact.
+Static analysis tool for Horizon Europe proposals. Detects **45+ anti-patterns** across 4 layers, estimates evaluator scores, and checks alignment with SMILE methodology — all in 60 seconds from a single PDF.
 
-## Quick Start
+Built from a real post-mortem of a submitted Horizon Europe Innovation Action. Every detector maps to something evaluators actually flag.
 
-```bash
-pip install pymupdf
-python analyzer.py your_proposal.pdf
 ```
+  C.R.U.C.I.B.L.E. v4.0.0
+  File:       proposal.pdf (246 pages)
+  Part B:     pp. 148-246 (98 pages)
+  Findings:   42
 
-## What It Detects
-
-### Document Quality
-| # | Pattern | Severity | What It Catches |
-|---|---------|----------|-----------------|
-| 1 | The Unfinished Template | CRITICAL | `[Page limit]`, `[insert...]`, `[TBD]` placeholders left in |
-| 2 | The Typo Graveyard | LOW | Merge artifacts, number-letter collisions, common typos |
-| 3 | The Orphaned Acronym | LOW | Acronyms used but never defined |
-
-### Technical Substance
-| # | Pattern | Severity | What It Catches |
-|---|---------|----------|-----------------|
-| 4 | The Philosophy Lecture | HIGH | Opening paragraph >250 chars before project specifics |
-| 5 | The Adjective Avalanche | MEDIUM | Buzzword density 3-5% per page |
-| 6 | The Buzzword Bingo Card | HIGH | Buzzword density >5% per page |
-| 7 | The Phantom Baseline | HIGH | KPIs (≥X%) without defined baselines or citations |
-| 8 | The Reinvented Wheel | HIGH | Beyond-SotA claims without naming commercial competitors |
-| 9 | The Monday Morning Test | MEDIUM | Task descriptions too vague to act on |
-
-### Partner & Consortium
-| # | Pattern | Severity | What It Catches |
-|---|---------|----------|-----------------|
-| 10 | The Ghost Partner | HIGH | Partner descriptions under 130 chars with no evidence |
-
-### Impact & Exploitation
-| # | Pattern | Severity | What It Catches |
-|---|---------|----------|-----------------|
-| 11 | The Exploitation Fog | HIGH | Generic "partners will exploit" without specifics |
-| 12 | The TAM Distraction | MEDIUM | Large market figures without sub-segment drill-down |
-| 13 | The All-For-All Trap | MEDIUM | Every objective validated in "All" pilots |
-| 14 | The Compliance Recital | MEDIUM | Open Science lists frameworks but no data specs |
-
-### SSH & Ethics
-| # | Pattern | Severity | What It Catches |
-|---|---------|----------|-----------------|
-| 15 | The Copy-Paste SSH | CRITICAL | SSH text >55% similar across different pilots |
-
-### Operations & Risk
-| # | Pattern | Severity | What It Catches |
-|---|---------|----------|-----------------|
-| 16 | The Medium-High Everything | MEDIUM | All risks rated same severity |
-| 17 | The Unmentionable Elephant | CRITICAL | Conflict-zone pilot with no risk mitigation |
-| 18 | The Time-Travel Deliverable | HIGH | Integration WPs starting before components deliver |
-| 19 | The Governance Photocopier | MEDIUM | Standard governance without project-specific mechanisms |
-
-## Output
-
-### Terminal Report
-```
-======================================================================
-  HORIZON EUROPE PROPOSAL ANALYZER v1.0.0
-======================================================================
-  File:     proposal.pdf
-  Pages:    246
-  Findings: 42
-
-  ESTIMATED SCORE (indicative, not a substitute for review)
-  ------------------------------------------------------------------
   Excellence       3.5/5.0  [##############......]  OK
   Impact           3.0/5.0  [############........]  OK
   Implementation   2.5/5.0  [##########..........]  WEAK
@@ -76,69 +19,272 @@ python analyzer.py your_proposal.pdf
   Threshold: AT RISK
 ```
 
+## Install
+
+```bash
+pip install pymupdf
+git clone https://github.com/Life-Atlas/horizon-proposal-analyzer.git
+cd horizon-proposal-analyzer
+```
+
+## Quick Start
+
+```bash
+# Basic analysis
+python crucible.py proposal.pdf
+
+# With call text (enables Layer 2: Call Alignment)
+python crucible.py proposal.pdf --call call_text.txt
+
+# Full analysis with all modes
+python crucible.py proposal.pdf --call call_text.txt --verbose --json report.json --budget --eic-pathfinder
+
+# Debug: print extracted ProposalModel
+python crucible.py proposal.pdf --model
+```
+
+## Architecture
+
+CRUCIBLE uses a **two-pass architecture** that first extracts a structured model, then runs analysis against it.
+
+```
+PDF ──► Pass 0: PRE-FLIGHT (10 gatekeeper checks)
+    ──► Pass 1: EXTRACTION (build ProposalModel)
+    ──► Pass 2: ANALYSIS (4 layers, 45+ detectors)
+    ──► Pass 3: STRATEGIC SCORING (EIC Pathfinder mode)
+```
+
+### Pass 0: Pre-Flight Checklist
+
+10 gatekeeper questions before analysis runs. Any BLOCKER = stop and fix before proceeding.
+
+| # | Check | Weight |
+|---|-------|--------|
+| 1 | Call text loaded? | BLOCKER |
+| 2 | Page count within limit? | BLOCKER |
+| 3 | Passes all 3 gatekeepers? | BLOCKER |
+| 4 | TRL targets aligned? | CRITICAL |
+| 5 | Coordinator has institutional credibility? | CRITICAL |
+| 6 | ≥3 partners from ≥3 eligible countries? | BLOCKER |
+| 7 | Budget within call limits? | CRITICAL |
+| 8 | Named key personnel with track records? | HIGH |
+| 9 | Commitment letter from coordinator? | HIGH |
+| 10 | All outputs open-access? | MEDIUM |
+
+### Pass 1: Extraction → ProposalModel
+
+Extracts structured data from the entire PDF (not just Part B):
+
+- **Metadata**: acronym, title, call ID, action type, duration
+- **Partners**: name, PIC, country, SME status, person-months
+- **Work packages**: number, title, lead, start/end months, person-months
+- **Tasks**: per-WP task breakdown
+- **Deliverables**: number, title, type, due month, responsible partner
+- **Milestones**: number, title, due month, verification means
+- **Risks**: description, likelihood, severity, mitigation
+- **KPIs**: targets with baseline detection
+- **Citations**: reference extraction and counting
+- **Budget**: total, EU contribution, per-partner breakdown
+- **Researchers**: named personnel with roles
+
+### Pass 2: Four-Layer Analysis
+
+#### Layer 1: Structural Integrity
+
+Cross-document consistency checks:
+
+- Partner count mismatches (Part A vs Part B)
+- Budget inconsistencies across sections
+- Work package numbering gaps
+- Deliverable/milestone orphans (referenced but undefined)
+- Person-month allocation vs partner commitments
+- Task-to-WP mapping completeness
+- Duration claims vs Gantt chart
+
+#### Layer 2: Call Alignment
+
+Requires `--call` flag with call/topic text file:
+
+- Terminology match (call keywords vs proposal text)
+- Expected outcome coverage
+- TRL range verification
+- Action type requirements
+- Cross-cutting priorities (gender, open science, SSH)
+- Specific call conditions and eligibility
+
+#### Layer 3: Field & SMILE
+
+**Field awareness** — checks the proposal demonstrates knowledge of its domain:
+
+- Named competitors and commercial alternatives
+- Citation density and recency
+- Standards body references
+- Patent landscape awareness
+- Regulatory framework acknowledgment
+
+**SMILE methodology** — Sustainable Methodology for Impact Lifecycle Enablement:
+
+| Phase | What It Checks |
+|-------|---------------|
+| 1. Reality Emulation | Digital twin / simulation / modeling language |
+| 2. System Resonance | Multi-stakeholder engagement, co-creation |
+| 3. Intelligent Calibration | AI/ML integration, feedback loops |
+| 4. Lifecycle Integration | Sustainability, circular economy, long-term |
+| 5. Evolutionary Scaling | Scalability plan, replication strategy |
+| 6. Perpetual Wisdom | Knowledge management, continuous learning |
+
+Plus three perspectives: **People**, **Systems**, **Planet**.
+
+SMILE principle enforcement: _Impact first, data last_ — penalizes proposals that lead with data/technology before establishing the problem.
+
+#### Layer 4: Anti-Patterns (45+ Detectors)
+
+| Detector | Severity | What It Catches |
+|----------|----------|-----------------|
+| Unfilled Placeholders | CRITICAL | `[Page limit]`, `[insert...]`, `[TBD]` left in |
+| Buzzword Density | HIGH | Adjective avalanche (>5% buzzwords per page) |
+| Philosophy Opening | HIGH | Opening paragraph >250 chars before specifics |
+| Phantom Baselines | HIGH | KPIs without defined baselines or citations |
+| Ghost Partners | HIGH | Partner descriptions <130 chars with no evidence |
+| Copy-Paste SSH | CRITICAL | SSH text >55% similar across pilots |
+| Medium-High Everything | MEDIUM | All risks rated identical severity |
+| Time-Travel Deliverables | HIGH | Integration WPs starting before components deliver |
+| Exploitation Fog | HIGH | Generic "partners will exploit" without specifics |
+| TAM Distraction | MEDIUM | Large market figures without segment drill-down |
+| Output/Outcome Confusion | MEDIUM | Outputs presented as impacts |
+| D&E Conflation | MEDIUM | Dissemination and exploitation treated as one activity |
+| Governance Photocopier | MEDIUM | Standard governance without project-specific mechanisms |
+| Reinvented Wheel (SotA) | HIGH | Beyond-SotA claims without naming competitors |
+| Partner-Driven WPs | MEDIUM | WPs designed around partners, not objectives |
+| Missing AI Disclosure | MEDIUM | AI tools used without proper disclosure |
+| Lump Sum Issues | MEDIUM | Lump-sum budget without proper justification |
+| Meeting Milestones | MEDIUM | Milestones that are just meetings |
+| Budget Narrative Gaps | MEDIUM | Missing justification for major cost items |
+| Consortium Diversity | LOW | Geographic/sector concentration |
+| Orphaned Acronyms | LOW | Acronyms used but never defined |
+
+### Pass 3: Strategic Scoring (EIC Pathfinder Mode)
+
+Enabled with `--eic-pathfinder`. Adds:
+
+**EIC Pathfinder Open sub-criteria scoring:**
+- 1a: Long-term vision of radically new technology
+- 1b: Concrete science-towards-technology breakthrough
+- 1c: Objectives and methodology soundness
+- 1d: Interdisciplinarity from distant disciplines
+- 2a: Long-term transformative impact
+- 2b: Innovation and exploitation potential
+- 2c: Communication and dissemination
+- 3a: Work plan quality
+- 3b: Resource allocation
+- 3c: Consortium quality
+
+**Strategic dimensions:** Time to market, innovation depth, partnership strength, ecosystem play, regulatory readiness.
+
+**Future Tech Radar:** 3-year / 5-year / 10-year technology horizon scoring.
+
+## CLI Reference
+
+```
+python crucible.py <pdf> [options]
+
+Arguments:
+  pdf                    Path to proposal PDF
+
+Options:
+  --call, -c PATH        Call/topic text file (enables Layer 2)
+  --verbose, -v          Show extraction and analysis progress
+  --json, -j PATH        Save full JSON output to file
+  --output, -o PATH      Save text report to file
+  --budget, -b           Enable budget analysis mode
+  --model, -m            Print extracted ProposalModel and exit
+  --eic-pathfinder, -e   EIC Pathfinder Open scoring mode
+```
+
+## Output Formats
+
+### Terminal Report
+
+Color-coded severity, grouped by layer, with score estimates and actionable suggestions for every finding.
+
 ### JSON Export
-```bash
-python analyzer.py proposal.pdf --json results.json
+
+Full structured output including:
+- Extracted ProposalModel (partners, WPs, deliverables, milestones, risks, KPIs, budget)
+- All findings with pattern, severity, page, text, suggestion, category, layer
+- Score estimates per criterion
+- SMILE coverage scores
+- Pre-flight checklist results
+- EIC Pathfinder sub-criteria scores (if enabled)
+- Strategic dimension scores (if enabled)
+
+### Text Report
+
+Same as terminal output, saved to file. Useful for sharing with consortium partners.
+
+## Scoring Model
+
+Base score: **3.0** per criterion (Excellence, Impact, Implementation).
+
+```
+Score = 3.0 + bonuses (up to +2.0) - penalties (up to -2.0)
+Range: 1.0 — 5.0 per criterion
+Total: 3.0 — 15.0
 ```
 
-### Save Report
-```bash
-python analyzer.py proposal.pdf --output report.txt
-```
+Severity penalty weights:
+- **CRITICAL** (1.0): Will definitely cost points — fix immediately
+- **HIGH** (0.5): Evaluators will likely flag
+- **MEDIUM** (0.15): Weakens the proposal
+- **LOW** (0.02): Minor quality signal
 
-## Usage Options
+Threshold: **10/15** overall, **3/5** per criterion. Below threshold on any criterion = rejection regardless of total.
 
-```
-python analyzer.py proposal.pdf              # Basic analysis
-python analyzer.py proposal.pdf --verbose    # Show detector progress
-python analyzer.py proposal.pdf --json out.json  # Machine-readable output
-python analyzer.py proposal.pdf -o report.txt    # Save report to file
-```
+For Innovation Actions: Impact is weighted 1.5x.
 
-## Scoring
+## Supported Call Types
 
-The tool estimates scores on the Horizon Europe 3-criterion scale (Excellence, Impact, Implementation), each 0-5. This is **indicative only** — actual evaluation depends on evaluator judgment, call specifics, and competitor proposals.
+- **RIA** (Research and Innovation Action) — default
+- **IA** (Innovation Action) — Impact weighted 1.5x
+- **EIC Pathfinder Open** — full sub-criteria scoring with `--eic-pathfinder`
+- **CSA** (Coordination and Support Action) — basic support
+- Generic Horizon Europe proposals
 
-Severity weights:
-- **CRITICAL** (1.0 points): Issues that will definitely cost points
-- **HIGH** (0.5 points): Issues evaluators will likely flag
-- **MEDIUM** (0.15 points): Issues that weaken the proposal
-- **LOW** (0.02 points): Minor quality signals
+Template v10.0 (Dec 2025) changes are reflected: 40-page limit for RIA/IA, Section 2.3 optional, equipment threshold >15%.
 
 ## Limitations
 
-- Text extraction from PDF is imperfect — complex layouts may produce false positives
-- The tool checks **form**, not **content** — a technically weak proposal with perfect formatting will score well
-- Anti-patterns are based on Innovation Actions; some may not apply to RIAs, CSAs, or other action types
-- Not a substitute for expert review or evaluator feedback
-- Does not check figures, tables rendered as images, or annexes
-
-## Pre-Submission Checklist
-
-The tool outputs a 19-item checklist. Key items:
-
-- [ ] All placeholders removed
-- [ ] Every KPI has a cited baseline
-- [ ] Every partner: profile + prior work + named personnel
-- [ ] Every task passes the "Monday morning test"
-- [ ] No time-travel deliverables
-- [ ] Each pilot has unique SSH analysis
-- [ ] Exploitation names partner + product + market + timeline
-- [ ] Spellcheck + final read by non-author
+- Text extraction from PDF is imperfect — complex layouts, tables as images, or scanned documents may produce false positives
+- Checks **form**, not **content** — a technically weak proposal with perfect formatting will score well
+- SMILE assessment uses structural evidence (stakeholder tables, named ontologies, validation methodology), not just keywords
+- Not a substitute for expert human review
+- Call alignment (Layer 2) requires the actual call text as input
 
 ## Contributing
 
-PRs welcome. To add a new anti-pattern:
+PRs welcome. To add a new anti-pattern detector:
 
-1. Add a detector function in `analyzer.py`
-2. Register it in the `detectors` list in `run_analysis()`
-3. Add the pattern name to the appropriate criterion in `CRITERION_PATTERNS`
-4. Update this README
+1. Add a `check_*` function in `crucible.py`
+2. Register it in the `detectors` list inside `run_analysis()`
+3. Use the `result.add()` API with pattern name, severity, page, text, suggestion, category, and layer
+4. Test against a real proposal PDF
+
+To add a new call type:
+
+1. Add criteria weights to the scoring model
+2. Add call-specific pre-flight checks if needed
+3. Add a CLI flag if the call type needs special handling
 
 ## Origin
 
-Built from a post-mortem of the EDGE-VERSE proposal (HORIZON-CL4-2026-04-HUMAN-01), an 18-partner Innovation Action for Virtual Worlds and Web 4.0. The 25 anti-patterns were identified through line-by-line evaluator analysis of the submitted Part B.
+Built from a post-mortem of the EDGE-VERSE proposal (HORIZON-CL4-2026-04-HUMAN-01), an 18-partner Innovation Action for Virtual Worlds and Web 4.0. The initial 25 anti-patterns grew to 45+ through systematic study of evaluator guidelines, the Horizon Europe Model Grant Agreement, and template v10.0.
+
+## SMILE Methodology
+
+CRUCIBLE is built on the [SMILE methodology](https://winniio.io) (Sustainable Methodology for Impact Lifecycle Enablement) — a framework that enforces **Impact first, data last**. Every proposal should flow from desired outcome backward to required data, not from available data forward to hoped-for impact.
+
+The six SMILE phases ensure proposals cover the full lifecycle: from reality modeling through stakeholder resonance, intelligent calibration, lifecycle integration, evolutionary scaling, to perpetual wisdom capture.
 
 ## License
 
-MIT
+MIT — [WINNIIO AB](https://winniio.io) / [Life Atlas](https://lifeatlas.online)

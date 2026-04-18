@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """
-C.R.U.C.I.B.L.E. v3.0.0
+C.R.U.C.I.B.L.E. v4.0.0
 Consortia Review Under Controlled Interrogation — Before Live Evaluation
 
 Two-pass full-proposal analyzer for Horizon Europe.
+Now with EIC Pathfinder Open call-specific evaluation and pre-flight checklist.
 
+Pass 0: PRE-FLIGHT — 10 gatekeeper questions before analysis runs
 Pass 1: EXTRACTION — build a structured ProposalModel from the entire PDF
 Pass 2: ANALYSIS — four layers
   Layer 1: STRUCTURAL INTEGRITY  — cross-document consistency
   Layer 2: CALL ALIGNMENT        — proposal vs call requirements
   Layer 3: FIELD & SMILE         — field awareness + SMILE methodology
   Layer 4: ANTI-PATTERNS         — 45+ mechanical checks
+Pass 3: STRATEGIC SCORING — time to market, innovation depth, partnerships, etc.
 
 Usage:
   python crucible.py proposal.pdf
@@ -18,6 +21,7 @@ Usage:
   python crucible.py proposal.pdf --call call_text.txt --verbose
   python crucible.py proposal.pdf --call call_text.txt --json results.json
   python crucible.py proposal.pdf --budget
+  python crucible.py proposal.pdf --eic-pathfinder  # EIC Pathfinder Open mode
 
 License: MIT — WINNIIO AB / Life Atlas
 """
@@ -37,7 +41,571 @@ except ImportError:
     print("ERROR: pymupdf required. Install with: pip install pymupdf")
     sys.exit(1)
 
-__version__ = "3.0.0"
+__version__ = "4.0.0"
+
+
+# ============================================================
+# PRE-FLIGHT CHECKLIST — 10 gatekeeper questions
+# ============================================================
+
+PRE_FLIGHT_CHECKLIST = [
+    {
+        "id": 1,
+        "question": "Do you have the CALL TEXT loaded?",
+        "why": "Without the call text, CRUCIBLE cannot verify terminology alignment, expected outcome coverage, or TRL match. You're grading an exam without the answer key.",
+        "weight": "BLOCKER",
+        "check": lambda model, call_text: call_text is not None,
+    },
+    {
+        "id": 2,
+        "question": "Is the PAGE COUNT within the call limit?",
+        "why": "Pages beyond the limit are REMOVED by the system — evaluators never see them. EIC Pathfinder Open: 22 pages for Part B.",
+        "weight": "BLOCKER",
+        "check": lambda model, call_text: (
+            model.part_b_pages <= 22 if model.part_b_pages > 0 else None
+        ),
+    },
+    {
+        "id": 3,
+        "question": "Does the proposal pass all 3 GATEKEEPERS?",
+        "why": "EIC Pathfinder rejects outright if missing: (1) convincing long-term vision of radically new technology, (2) concrete novel science-towards-technology breakthrough, (3) high-risk/high-gain research approach.",
+        "weight": "BLOCKER",
+        "check": lambda model, call_text: None,  # manual check
+    },
+    {
+        "id": 4,
+        "question": "Are TRL targets aligned with call specification?",
+        "why": "EIC Pathfinder Open: starting TRL 2, exit TRL 3-4. Claiming TRL 5+ exits signals wrong call.",
+        "weight": "CRITICAL",
+        "check": lambda model, call_text: None,  # checked in Layer 2
+    },
+    {
+        "id": 5,
+        "question": "Is there a COORDINATOR with institutional credibility?",
+        "why": "A 1-person startup coordinating EUR 3-4M is a near-fatal evaluator red flag. Universities or large companies coordinate.",
+        "weight": "CRITICAL",
+        "check": lambda model, call_text: None,  # checked in structural
+    },
+    {
+        "id": 6,
+        "question": "Does the consortium have >=3 partners from >=3 eligible countries?",
+        "why": "Horizon Europe minimum eligibility requirement. Fail = desk rejection.",
+        "weight": "BLOCKER",
+        "check": lambda model, call_text: (
+            len(model.partners) >= 3 and
+            len(set(p.country for p in model.partners if p.country)) >= 3
+            if model.partners else None
+        ),
+    },
+    {
+        "id": 7,
+        "question": "Is the budget within call limits (EUR 1-4M for Pathfinder Open)?",
+        "why": "Over EUR 4M = automatic rejection. Under EUR 1M signals insufficient ambition.",
+        "weight": "CRITICAL",
+        "check": lambda model, call_text: (
+            1_000_000 <= model.budget_eu <= 4_000_000
+            if model.budget_eu > 0 else None
+        ),
+    },
+    {
+        "id": 8,
+        "question": "Are there NAMED KEY PERSONNEL with relevant track records?",
+        "why": "EIC evaluators check for named researchers with publication records. 'TBD' or 'to be hired' for leads = score penalty.",
+        "weight": "HIGH",
+        "check": lambda model, call_text: bool(model.researchers),
+    },
+    {
+        "id": 9,
+        "question": "Is there a commitment letter from the coordinator?",
+        "why": "Large-company coordinators need documented commitment. Without it, evaluators question whether the company actually agreed.",
+        "weight": "HIGH",
+        "check": lambda model, call_text: None,  # manual check
+    },
+    {
+        "id": 10,
+        "question": "Are ALL outputs open-access (Pathfinder Open Science requirement)?",
+        "why": "EIC Pathfinder explicitly requires open science practices: pre-prints, open data, open-source code. Proprietary outputs penalised.",
+        "weight": "MEDIUM",
+        "check": lambda model, call_text: any(
+            term in model.full_text.lower()
+            for term in ['open access', 'open-access', 'open source', 'open-source',
+                         'cc-by', 'apache 2', 'zenodo', 'arxiv']
+        ) if model.full_text else None,
+    },
+]
+
+
+# ============================================================
+# EIC PATHFINDER OPEN — CALL-SPECIFIC EVALUATION
+# ============================================================
+
+EIC_PATHFINDER_CRITERIA = {
+    "Excellence": {
+        "weight": 0.50,
+        "threshold": 4.0,
+        "sub_criteria": {
+            "1a_vision": {
+                "name": "Long-term vision",
+                "question": "How convincing is the vision of a radically new technology?",
+                "markers_positive": [
+                    "radically new", "paradigm", "transformative", "foundational",
+                    "computational primitive", "new class of", "first-of-its-kind",
+                    "no equivalent exists", "game-changing",
+                ],
+                "markers_negative": [
+                    "incremental", "improvement", "extension of", "building on existing",
+                    "minor advancement",
+                ],
+            },
+            "1b_breakthrough": {
+                "name": "Science-towards-technology breakthrough",
+                "question": "How concrete, novel, and ambitious is the proposed breakthrough?",
+                "markers_positive": [
+                    "first automated", "first validated", "first open-source",
+                    "first demonstration", "no prior", "novel contribution",
+                    "beyond state of the art", "proof of principle",
+                ],
+                "markers_negative": [
+                    "well-known", "established method", "standard approach",
+                ],
+            },
+            "1c_objectives": {
+                "name": "Objectives and methodology",
+                "question": "How concrete/plausible are objectives? How sound is methodology?",
+                "markers_positive": [
+                    "high-risk/high-gain", "proof of principle", "fallback",
+                    "alternative direction", "risk mitigation", "validation protocol",
+                    "statistical", "cross-validation", "confidence interval",
+                    "open science",
+                ],
+                "markers_negative": [
+                    "will develop", "will create", "will implement",  # vague verbs without method
+                ],
+            },
+            "1d_interdisciplinary": {
+                "name": "Interdisciplinarity",
+                "question": "How relevant is interdisciplinary approach from distant disciplines?",
+                "markers_positive": [
+                    "interdisciplinary", "cross-disciplinary", "traditionally separate",
+                    "computer vision", "materials science", "rf propagation",
+                    "privacy engineering", "humanitarian",
+                ],
+                "markers_negative": [],
+            },
+        },
+    },
+    "Impact": {
+        "weight": 0.30,
+        "threshold": 3.5,
+        "sub_criteria": {
+            "2a_long_term_impact": {
+                "name": "Long-term impact",
+                "question": "How significant are potential transformative effects on economy/society?",
+                "markers_positive": [
+                    "eur", "billion", "trillion", "market",
+                    "reconstruction", "5g", "6g", "urban air mobility",
+                    "regulatory", "policy", "green deal", "digital decade",
+                ],
+                "markers_negative": [],
+            },
+            "2b_innovation_potential": {
+                "name": "Innovation potential",
+                "question": "Potential for disruptive innovations? IP protection? Key actor involvement?",
+                "markers_positive": [
+                    "disruptive", "new market", "exploitation", "ip protection",
+                    "patent", "license", "spin-off", "letter of intent",
+                    "first customer", "revenue", "commercial",
+                ],
+                "markers_negative": [
+                    "results will be", "partners will", "will integrate",  # generic exploitation
+                ],
+            },
+            "2c_communication": {
+                "name": "Communication and dissemination",
+                "question": "Measures for scientific publications, communication, awareness?",
+                "markers_positive": [
+                    "publication", "conference", "workshop", "open data",
+                    "zenodo", "ieee dataport", "community", "hackathon",
+                    "standards contribution", "3gpp", "etsi", "ogc",
+                ],
+                "markers_negative": [],
+            },
+        },
+    },
+    "Implementation": {
+        "weight": 0.20,
+        "threshold": 3.0,
+        "sub_criteria": {
+            "3a_work_plan": {
+                "name": "Work plan quality",
+                "question": "How coherent/effective are WPs, tasks, milestones, risk mitigation?",
+                "markers_positive": [
+                    "work package", "task", "deliverable", "milestone",
+                    "risk", "mitigation", "fallback", "contingency",
+                    "phase", "gate",
+                ],
+                "markers_negative": [
+                    "tbd", "to be determined", "to be defined",
+                ],
+            },
+            "3b_resources": {
+                "name": "Resource allocation",
+                "question": "How appropriate is allocation of person-months and costs?",
+                "markers_positive": [
+                    "person-month", "pm", "fte", "equipment",
+                    "budget", "personnel", "subcontracting",
+                ],
+                "markers_negative": [],
+            },
+            "3c_consortium": {
+                "name": "Consortium quality",
+                "question": "Do all members have necessary capacity and expertise?",
+                "markers_positive": [
+                    "track record", "prior project", "publication",
+                    "experience", "expertise", "key personnel",
+                    "named researcher", "deputy", "commitment letter",
+                ],
+                "markers_negative": [
+                    "to be hired", "tbd", "to be recruited",
+                ],
+            },
+        },
+    },
+}
+
+
+# ============================================================
+# STRATEGIC DIMENSIONS — beyond the call criteria
+# ============================================================
+
+STRATEGIC_DIMENSIONS = {
+    "time_to_market": {
+        "name": "Time to Market",
+        "description": "How quickly can results become products/services?",
+        "markers": ["m36", "m42", "m48", "first customer", "pilot", "commercial",
+                     "revenue", "saas", "licensing", "exploitation"],
+        "weight": 15,
+    },
+    "innovation_depth": {
+        "name": "Innovation Depth",
+        "description": "How genuinely novel is the core contribution?",
+        "markers": ["first", "no prior", "novel", "new computational",
+                     "paradigm", "proof of principle", "radically new",
+                     "beyond state of the art", "foundational"],
+        "weight": 20,
+    },
+    "partnership_strength": {
+        "name": "Partnership Strength",
+        "description": "How credible and committed are the partners?",
+        "markers": ["commitment letter", "prior collaboration", "track record",
+                     "key personnel", "named researcher", "deputy",
+                     "commercial engine", "200+ operator"],
+        "weight": 15,
+    },
+    "defensibility": {
+        "name": "Defensibility / Moat",
+        "description": "What prevents competitors from replicating?",
+        "markers": ["network effect", "open-source", "benchmark dataset",
+                     "standards contribution", "first-mover",
+                     "accumulating", "cross-validated"],
+        "weight": 10,
+    },
+    "market_size": {
+        "name": "Market Size & Clarity",
+        "description": "Is the addressable market credibly sized?",
+        "markers": ["eur", "billion", "trillion", "addressable",
+                     "segment", "target", "sub-segment"],
+        "weight": 10,
+    },
+    "team_execution": {
+        "name": "Team Execution Capability",
+        "description": "Can this team actually deliver?",
+        "markers": ["consultant", "fte", "hire", "operational capacity",
+                     "prior project", "delivered", "validated",
+                     "testbed", "deployed"],
+        "weight": 10,
+    },
+    "policy_alignment": {
+        "name": "EU Policy Alignment",
+        "description": "How well does this serve EU strategic priorities?",
+        "markers": ["green deal", "digital decade", "ukraine",
+                     "reconstruction", "sovereignty", "open science",
+                     "u-space", "easa", "gdpr", "fair"],
+        "weight": 10,
+    },
+    "wow_factor": {
+        "name": "Wow Factor / Memorability",
+        "description": "Will an evaluator remember this proposal after reading 50?",
+        "markers": ["pagerank for physical space", "computational primitive",
+                     "spatial index", "no equivalent exists",
+                     "contested environment", "post-conflict"],
+        "weight": 10,
+    },
+}
+
+
+# ============================================================
+# FUTURE TECH RADAR — score against where the world WILL BE, not where it IS
+# Three horizons: 3yr (2029), 5yr (2031), 10yr (2036)
+# Projects should align with future reality, not current reality.
+# x100 thinking: what happens when this tech is 100x cheaper/faster/smaller?
+# It is OK to not score high on everything — conscious positioning matters.
+# ============================================================
+
+FUTURE_TECH_RADAR = {
+    # --- 3-YEAR HORIZON (2029) ---
+    "edge_native": {
+        "name": "Edge-Native / Local-First",
+        "horizon": "3yr",
+        "horizon_desc": "2028-2030: Edge AI becomes default. Cloud-first is legacy.",
+        "markers": ["edge", "local-first", "on-device", "edge compute", "fog",
+                     "sovereignty", "process locally", "sync later", "latency"],
+        "weight": 12,
+    },
+    "physical_ai": {
+        "name": "Physical AI / Embodied Intelligence",
+        "horizon": "3yr",
+        "horizon_desc": "2028-2030: AI moves from digital to physical world (robotics, spatial computing, digital twins).",
+        "markers": ["physical", "spatial", "3d reconstruction", "gaussian splat",
+                     "digital twin", "drone", "uav", "sensor", "lidar", "photogrammetry",
+                     "embodied", "real-world"],
+        "weight": 15,
+    },
+    "small_models_lqm": {
+        "name": "Small/Local Models + LQMs",
+        "horizon": "3yr",
+        "horizon_desc": "2028-2030: Edge-deployable models replace cloud LLMs. Physics-based LQMs outperform statistical models.",
+        "markers": ["local model", "small model", "quantitative model", "physics-based",
+                     "mechanistic", "simulation", "ray tracing", "not statistical",
+                     "physics, not statistics"],
+        "weight": 10,
+    },
+    "hpc_quantum": {
+        "name": "HPC + Quantum Enablement",
+        "horizon": "3yr",
+        "horizon_desc": "2029-2032: Quantum-classical hybrid pipelines for simulation. GPU clusters for 3D reconstruction.",
+        "markers": ["hpc", "quantum", "gpu", "parallel", "compute cluster",
+                     "high-performance", "accelerat"],
+        "weight": 5,
+    },
+    "agentic_ai": {
+        "name": "AI Agentic Stacks",
+        "horizon": "3yr",
+        "horizon_desc": "2027-2029: Autonomous AI agents orchestrate multi-step workflows. Human-on-the-loop replaces human-in-the-loop.",
+        "markers": ["agent", "autonomous", "orchestrat", "pipeline", "automated",
+                     "workflow", "multi-step", "self-improving", "feedback loop"],
+        "weight": 10,
+    },
+    "harvest_now_decrypt_later": {
+        "name": "Post-Quantum / HNDL Protection",
+        "horizon": "3yr",
+        "horizon_desc": "2028-2030: HNDL attacks make current encryption vulnerable. Post-quantum crypto becomes mandatory.",
+        "markers": ["quantum-secure", "post-quantum", "harvest now decrypt later",
+                     "pqc", "kyber", "dilithium", "lattice-based"],
+        "weight": 5,
+    },
+    "explainable_ai": {
+        "name": "Explainable + Understandable AI",
+        "horizon": "3yr",
+        "horizon_desc": "2027-2029: EU AI Act enforces explainability. Black-box models face regulatory barriers.",
+        "markers": ["explainable", "interpretable", "transparent", "understandable",
+                     "audit trail", "physics-based", "not black box", "white box",
+                     "mechanistic", "causal"],
+        "weight": 10,
+    },
+    "actor_network": {
+        "name": "Actor-Network / Sociotechnical",
+        "horizon": "3yr",
+        "horizon_desc": "2027-2030: Systems thinking replaces reductionism. ANT gains traction in EU policy.",
+        "markers": ["actor-network", "sociotechnical", "stakeholder", "ecosystem",
+                     "boundary object", "translation", "network effect",
+                     "interdisciplinary", "cross-disciplinary"],
+        "weight": 8,
+    },
+    "secure_resilient": {
+        "name": "Security + Resilience by Design",
+        "horizon": "3yr",
+        "horizon_desc": "2027-2029: Zero-trust and resilience become architectural requirements, not add-ons.",
+        "markers": ["security", "resilience", "gdpr", "privacy", "differential privacy",
+                     "zero-trust", "supply chain", "contested", "post-conflict",
+                     "threat model", "attack surface"],
+        "weight": 8,
+    },
+    "open_sovereign": {
+        "name": "Open + Sovereign Infrastructure",
+        "horizon": "3yr",
+        "horizon_desc": "2028-2030: EU digital sovereignty mandates open standards, open source, data sovereignty.",
+        "markers": ["open source", "open-source", "open data", "sovereign",
+                     "apache", "cc-by", "fair", "interoperable", "no lock-in",
+                     "modular", "swappable"],
+        "weight": 10,
+    },
+    "spatial_web": {
+        "name": "Spatial Web / Web 4.0",
+        "horizon": "3yr",
+        "horizon_desc": "2028-2032: Physical and digital worlds merge. Spatial indexing becomes infrastructure like DNS.",
+        "markers": ["spatial", "3d", "gaussian", "mesh", "point cloud",
+                     "citygml", "ifc", "ogc", "geospatial", "bim", "gis",
+                     "spatial computing", "spatial index"],
+        "weight": 12,
+    },
+    "drone_uam": {
+        "name": "Drone Economy + UAM",
+        "horizon": "3yr",
+        "horizon_desc": "2028-2030: BVLOS drone operations become routine. UAM moves from prototype to infrastructure.",
+        "markers": ["drone", "uav", "bvlos", "urban air mobility", "uam",
+                     "u-space", "altitude", "corridor", "autonomous flight",
+                     "easa"],
+        "weight": 8,
+    },
+    # --- 5-YEAR HORIZON (2031) ---
+    "digital_twin_federation": {
+        "name": "Federated Digital Twins",
+        "horizon": "5yr",
+        "horizon_desc": "2030-2032: Digital twins stop being siloed. Federated twin networks share state across organizations and borders.",
+        "markers": ["federated", "interoperable", "cross-organization",
+                     "shared state", "digital twin", "citygml", "ifc",
+                     "common data environment", "linked data"],
+        "weight": 8,
+    },
+    "synthetic_data_generation": {
+        "name": "Synthetic Data + Generative Worlds",
+        "horizon": "5yr",
+        "horizon_desc": "2030-2032: Synthetic environments replace real data collection for training. World models generate training scenarios.",
+        "markers": ["synthetic", "generated", "world model", "simulation",
+                     "augmented", "generative", "procedural"],
+        "weight": 6,
+    },
+    "autonomous_infrastructure": {
+        "name": "Autonomous Infrastructure Management",
+        "horizon": "5yr",
+        "horizon_desc": "2030-2032: Infrastructure self-monitors, self-repairs, self-optimizes. Human operators become exception handlers.",
+        "markers": ["autonomous", "self-improving", "self-monitoring",
+                     "predictive maintenance", "continuous", "prescriptive",
+                     "automated decision"],
+        "weight": 7,
+    },
+    "regulation_as_code": {
+        "name": "Regulation-as-Code / Machine-Readable Policy",
+        "horizon": "5yr",
+        "horizon_desc": "2030-2032: EU regulations become machine-executable. Compliance is automated, not manual.",
+        "markers": ["compliance", "regulatory", "easa", "gdpr", "ai act",
+                     "regulation", "automated compliance", "audit trail",
+                     "machine-readable"],
+        "weight": 5,
+    },
+    # --- 10-YEAR HORIZON (2036) ---
+    "ambient_intelligence": {
+        "name": "Ambient Intelligence / Invisible Computing",
+        "horizon": "10yr",
+        "horizon_desc": "2033-2036: Computing disappears into the environment. Spatial computing becomes as invisible as WiFi.",
+        "markers": ["ambient", "invisible", "ubiquitous", "pervasive",
+                     "spatial computing", "environmental intelligence",
+                     "context-aware"],
+        "weight": 4,
+    },
+    "biological_digital_convergence": {
+        "name": "Biological-Digital Convergence",
+        "horizon": "10yr",
+        "horizon_desc": "2033-2036: Digital twins merge with biological systems. Material science meets synthetic biology.",
+        "markers": ["biological", "bio-digital", "material composition",
+                     "dielectric", "material properties", "environmental sensing",
+                     "living material"],
+        "weight": 4,
+    },
+    "planetary_digital_twin": {
+        "name": "Planetary-Scale Digital Twin",
+        "horizon": "10yr",
+        "horizon_desc": "2033-2036: City-scale twins merge into national, then planetary infrastructure. The spatial index BECOMES the map.",
+        "markers": ["planetary", "global", "city-scale", "country-scale",
+                     "infrastructure", "persistent", "universal",
+                     "queryable", "spatial index"],
+        "weight": 5,
+    },
+    "post_quantum_native": {
+        "name": "Post-Quantum Native Architecture",
+        "horizon": "10yr",
+        "horizon_desc": "2033-2036: Quantum computers break current encryption. All data collected today is vulnerable. Systems must be quantum-native.",
+        "markers": ["quantum", "post-quantum", "quantum-secure",
+                     "lattice", "homomorphic", "future-proof encryption"],
+        "weight": 3,
+    },
+}
+
+
+def score_future_tech_radar(model) -> dict:
+    """Score proposal against the Future Tech Radar (2029 landscape)."""
+    text = model.full_text.lower() if model.full_text else ""
+    scores = {}
+
+    for dim_key, dim in FUTURE_TECH_RADAR.items():
+        found = sum(1 for m in dim["markers"] if m in text)
+        total = len(dim["markers"])
+        raw_pct = (found / total * 100) if total > 0 else 0
+        score = round(max(1.0, min(5.0, 1.0 + raw_pct * 0.04)), 1)
+        scores[dim_key] = {
+            "name": dim["name"],
+            "score": score,
+            "found": found,
+            "total": total,
+            "weight": dim["weight"],
+            "horizon": dim.get("horizon", "3yr"),
+            "horizon_desc": dim.get("horizon_desc", dim.get("horizon", "")),
+        }
+
+    weighted_sum = sum(s["score"] * s["weight"] for s in scores.values())
+    total_weight = sum(s["weight"] for s in scores.values())
+    scores["_weighted_avg"] = round(weighted_sum / total_weight, 2) if total_weight else 0
+    scores["_future_readiness"] = (
+        "FUTURE-READY" if scores["_weighted_avg"] >= 4.0
+        else "PARTIALLY ALIGNED" if scores["_weighted_avg"] >= 3.0
+        else "PRESENT-FOCUSED"
+    )
+    return scores
+
+
+def format_future_tech_radar(scores: dict) -> list:
+    """Format future tech radar as report lines, grouped by horizon."""
+    lines = []
+    lines.append("  FUTURE TECH RADAR (scoring against where the world WILL BE)")
+    lines.append("  " + "-" * 72)
+    lines.append("  x100 question: What happens when this is 100x cheaper/faster/smaller?")
+    lines.append("")
+
+    horizons = {"3yr": "3-YEAR HORIZON (2029)", "5yr": "5-YEAR HORIZON (2031)",
+                "10yr": "10-YEAR HORIZON (2036)"}
+    horizon_avgs = {}
+
+    for hz_key, hz_label in horizons.items():
+        hz_dims = [(k, v) for k, v in scores.items()
+                   if not k.startswith("_") and v.get("horizon") == hz_key]
+        if not hz_dims:
+            continue
+
+        lines.append(f"  --- {hz_label} ---")
+        hz_total_w = 0
+        hz_total_s = 0
+        for dim_key, dim in sorted(hz_dims, key=lambda x: x[1]["weight"], reverse=True):
+            filled = int((dim["score"] - 1.0) / 4.0 * 16)
+            bar = "#" * filled + "." * (16 - filled)
+            lines.append(f"  {dim['name']:<34} {dim['score']}/5.0  [{bar}]  "
+                          f"({dim['found']}/{dim['total']}, w={dim['weight']}%)")
+            hz_total_w += dim["weight"]
+            hz_total_s += dim["score"] * dim["weight"]
+        hz_avg = hz_total_s / hz_total_w if hz_total_w else 0
+        horizon_avgs[hz_key] = hz_avg
+        lines.append(f"  {hz_label} AVG: {hz_avg:.2f}/5.0")
+        lines.append("")
+
+    lines.append(f"  OVERALL FUTURE READINESS:  {scores['_weighted_avg']:.2f} / 5.00  "
+                  f"[{scores['_future_readiness']}]")
+    if horizon_avgs:
+        weakest = min(horizon_avgs, key=horizon_avgs.get)
+        lines.append(f"  Weakest horizon: {horizons.get(weakest, weakest)} "
+                      f"({horizon_avgs[weakest]:.2f}/5.0)")
+    lines.append("")
+    return lines
+
 
 # ============================================================
 # DATA STRUCTURES
@@ -154,6 +722,7 @@ class ProposalModel:
     full_text: str = ""
     part_b_text: str = ""
     part_b_start_page: int = 1
+    part_b_pages: int = 0
     total_pages: int = 0
 
     def summary(self) -> str:
@@ -261,6 +830,7 @@ def extract_proposal_model(pages: dict, page_count: int) -> ProposalModel:
     model = ProposalModel()
     model.total_pages = page_count
     model.part_b_start_page = find_part_b_start(pages)
+    model.part_b_pages = sum(1 for n in pages if n >= model.part_b_start_page and not is_admin_page(pages[n]))
     model.full_text = get_full_text(pages)
     model.part_b_text = get_part_b_text(pages, model.part_b_start_page)
 
@@ -1636,6 +2206,189 @@ def check_consortium_diversity(model: ProposalModel, result: AnalysisResult):
 
 
 # ============================================================
+# PRE-FLIGHT RUNNER
+# ============================================================
+
+def run_pre_flight(model: ProposalModel, call_text: Optional[str]) -> list:
+    """Run the 10-question pre-flight checklist. Returns list of (question_dict, result)."""
+    results = []
+    for q in PRE_FLIGHT_CHECKLIST:
+        try:
+            outcome = q["check"](model, call_text)
+        except Exception:
+            outcome = None
+        results.append((q, outcome))
+    return results
+
+
+def format_pre_flight(pf_results: list) -> list:
+    """Format pre-flight results as report lines."""
+    lines = []
+    lines.append("  PRE-FLIGHT CHECKLIST (10 gatekeepers)")
+    lines.append("  " + "-" * 72)
+    blockers = 0
+    warnings = 0
+    for q, outcome in pf_results:
+        if outcome is True:
+            icon = "PASS"
+        elif outcome is False:
+            icon = "FAIL"
+            if q["weight"] == "BLOCKER":
+                blockers += 1
+            else:
+                warnings += 1
+        else:
+            icon = "????"
+            warnings += 1
+        lines.append(f"  [{icon}] Q{q['id']:>2}. {q['question']}")
+        if outcome is not True:
+            lines.append(f"         {q['why'][:90]}")
+    lines.append("")
+    if blockers > 0:
+        lines.append(f"  !! {blockers} BLOCKER(S) DETECTED — proposal may be desk-rejected")
+    elif warnings > 0:
+        lines.append(f"  ~  {warnings} item(s) need manual verification")
+    else:
+        lines.append(f"  All 10 pre-flight checks PASSED")
+    lines.append("")
+    return lines
+
+
+# ============================================================
+# EIC PATHFINDER SCORING (when --eic-pathfinder flag is used)
+# ============================================================
+
+def score_eic_pathfinder(model: ProposalModel, result: AnalysisResult) -> dict:
+    """Score proposal against EIC Pathfinder Open sub-criteria."""
+    text = model.full_text.lower() if model.full_text else ""
+    scores = {}
+
+    for criterion_key, criterion in EIC_PATHFINDER_CRITERIA.items():
+        sub_scores = {}
+        for sub_key, sub in criterion["sub_criteria"].items():
+            base = 3.0
+            bonus = 0.0
+            penalty = 0.0
+
+            pos_found = sum(1 for m in sub["markers_positive"] if m in text)
+            neg_found = sum(1 for m in sub["markers_negative"] if m in text)
+
+            bonus += min(1.5, pos_found * 0.15)
+            penalty += neg_found * 0.3
+
+            sub_score = round(max(1.0, min(5.0, base + bonus - penalty)), 1)
+            sub_scores[sub_key] = {
+                "name": sub["name"],
+                "score": sub_score,
+                "positive_markers": pos_found,
+                "negative_markers": neg_found,
+            }
+
+        avg = sum(s["score"] for s in sub_scores.values()) / len(sub_scores)
+        scores[criterion_key] = {
+            "weight": criterion["weight"],
+            "threshold": criterion["threshold"],
+            "sub_criteria": sub_scores,
+            "average": round(avg, 2),
+            "passes_threshold": avg >= criterion["threshold"],
+        }
+
+    weighted = sum(
+        scores[k]["average"] * scores[k]["weight"]
+        for k in scores
+    )
+    scores["_weighted_total"] = round(weighted, 2)
+    scores["_max_possible"] = 5.0
+    return scores
+
+
+def format_eic_pathfinder_scores(scores: dict) -> list:
+    """Format EIC Pathfinder scores as report lines."""
+    lines = []
+    lines.append("  EIC PATHFINDER OPEN — CALL-SPECIFIC SCORING")
+    lines.append("  " + "-" * 72)
+    lines.append("  Weights: Excellence 50% | Impact 30% | Implementation 20%")
+    lines.append("  Thresholds: Excellence >=4.0 | Impact >=3.5 | Implementation >=3.0")
+    lines.append("")
+
+    for criterion_key in ["Excellence", "Impact", "Implementation"]:
+        c = scores[criterion_key]
+        status = "PASS" if c["passes_threshold"] else "FAIL"
+        filled = int((c["average"] - 1.0) / 4.0 * 20)
+        bar = "#" * filled + "." * (20 - filled)
+        lines.append(f"  {criterion_key:<16} {c['average']:.1f}/5.0  [{bar}]  "
+                      f"threshold {c['threshold']}  [{status}]  (weight {int(c['weight']*100)}%)")
+        for sub_key, sub in c["sub_criteria"].items():
+            s_filled = int((sub["score"] - 1.0) / 4.0 * 16)
+            s_bar = "#" * s_filled + "." * (16 - s_filled)
+            lines.append(f"    {sub['name']:<36} {sub['score']}/5.0  [{s_bar}]  "
+                          f"(+{sub['positive_markers']} / -{sub['negative_markers']})")
+        lines.append("")
+
+    wt = scores["_weighted_total"]
+    lines.append(f"  WEIGHTED TOTAL:  {wt:.2f} / 5.00")
+
+    all_pass = all(scores[k]["passes_threshold"] for k in ["Excellence", "Impact", "Implementation"])
+    if all_pass and wt >= 4.0:
+        lines.append(f"  VERDICT:  COMPETITIVE (all thresholds passed, weighted >=4.0)")
+    elif all_pass:
+        lines.append(f"  VERDICT:  PASSES THRESHOLDS but weighted score is low — may not rank high enough")
+    else:
+        failing = [k for k in ["Excellence", "Impact", "Implementation"]
+                    if not scores[k]["passes_threshold"]]
+        lines.append(f"  VERDICT:  FAILS THRESHOLD on {', '.join(failing)} — will be rejected")
+    lines.append("")
+    return lines
+
+
+# ============================================================
+# STRATEGIC DIMENSION SCORING
+# ============================================================
+
+def score_strategic_dimensions(model: ProposalModel) -> dict:
+    """Score proposal across 8 strategic dimensions beyond call criteria."""
+    text = model.full_text.lower() if model.full_text else ""
+    scores = {}
+
+    for dim_key, dim in STRATEGIC_DIMENSIONS.items():
+        found = sum(1 for m in dim["markers"] if m in text)
+        total = len(dim["markers"])
+        raw_pct = (found / total * 100) if total > 0 else 0
+        score_5 = round(max(1.0, min(5.0, 1.0 + raw_pct * 0.04)), 1)
+        scores[dim_key] = {
+            "name": dim["name"],
+            "score": score_5,
+            "found": found,
+            "total": total,
+            "weight": dim["weight"],
+            "description": dim["description"],
+        }
+
+    weighted_sum = sum(s["score"] * s["weight"] for s in scores.values())
+    total_weight = sum(s["weight"] for s in scores.values())
+    scores["_weighted_avg"] = round(weighted_sum / total_weight, 2) if total_weight else 0
+    return scores
+
+
+def format_strategic_dimensions(scores: dict) -> list:
+    """Format strategic dimension scores as report lines."""
+    lines = []
+    lines.append("  STRATEGIC DIMENSIONS (beyond call criteria)")
+    lines.append("  " + "-" * 72)
+    for dim_key, dim in sorted(scores.items(), key=lambda x: x[1].get("weight", 0) if isinstance(x[1], dict) and "weight" in x[1] else 0, reverse=True):
+        if dim_key.startswith("_"):
+            continue
+        filled = int((dim["score"] - 1.0) / 4.0 * 16)
+        bar = "#" * filled + "." * (16 - filled)
+        lines.append(f"  {dim['name']:<24} {dim['score']}/5.0  [{bar}]  "
+                      f"({dim['found']}/{dim['total']} markers, weight {dim['weight']}%)")
+    lines.append("")
+    lines.append(f"  STRATEGIC WEIGHTED AVG:  {scores['_weighted_avg']:.2f} / 5.00")
+    lines.append("")
+    return lines
+
+
+# ============================================================
 # SCORING  (base 3.0, bonuses up to +2.0, penalties up to -2.0)
 # ============================================================
 
@@ -1809,7 +2562,12 @@ def run_budget_analysis(model: ProposalModel, result: AnalysisResult):
 
 def format_report(result: AnalysisResult, pdf_path: str, model: ProposalModel,
                   smile_scores: Optional[dict] = None, has_call: bool = False,
-                  budget_mode: bool = False) -> str:
+                  budget_mode: bool = False,
+                  eic_pathfinder: bool = False,
+                  pf_results: Optional[list] = None,
+                  eic_scores: Optional[dict] = None,
+                  strategic_scores: Optional[dict] = None,
+                  future_scores: Optional[dict] = None) -> str:
     scores = estimate_scores(result, model)
     total = sum(scores.values())
     severity_counts = Counter(f.severity for f in result.findings)
@@ -1824,6 +2582,8 @@ def format_report(result: AnalysisResult, pdf_path: str, model: ProposalModel,
     lines.append("  C.R.U.C.I.B.L.E. v" + __version__)
     lines.append("  Consortia Review Under Controlled Interrogation")
     lines.append("  Before Live Evaluation")
+    if eic_pathfinder:
+        lines.append("  MODE: EIC Pathfinder Open 2026")
     lines.append("=" * w)
     lines.append(f"  File:        {Path(pdf_path).name}")
     lines.append(f"  Pages:       {model.total_pages}")
@@ -1854,6 +2614,22 @@ def format_report(result: AnalysisResult, pdf_path: str, model: ProposalModel,
     if model.budget_eu > 0:
         lines.append(f"  EU contrib:    EUR {model.budget_eu:>12,.0f}")
     lines.append("")
+
+    # --- Pre-flight checklist (if available) ---
+    if pf_results:
+        lines.extend(format_pre_flight(pf_results))
+
+    # --- EIC Pathfinder scores (if available) ---
+    if eic_scores:
+        lines.extend(format_eic_pathfinder_scores(eic_scores))
+
+    # --- Strategic dimensions (if available) ---
+    if strategic_scores:
+        lines.extend(format_strategic_dimensions(strategic_scores))
+
+    # --- Future Tech Radar (if available) ---
+    if future_scores:
+        lines.extend(format_future_tech_radar(future_scores))
 
     # --- Four-layer summary ---
     layer_names = {1: "Structural Integrity", 2: "Call Alignment",
@@ -1991,7 +2767,8 @@ def format_report(result: AnalysisResult, pdf_path: str, model: ProposalModel,
 # ============================================================
 
 def run_analysis(pdf_path: str, call_path: Optional[str] = None,
-                 verbose: bool = False, budget_mode: bool = False):
+                 verbose: bool = False, budget_mode: bool = False,
+                 eic_pathfinder: bool = False):
     pages, page_count = extract_text(pdf_path)
 
     if verbose:
@@ -2072,12 +2849,30 @@ def run_analysis(pdf_path: str, call_path: Optional[str] = None,
             print("  Budget mode: additional checks...")
         run_budget_analysis(model, result)
 
-    return result, model, smile_scores
+    # Pass 0: Pre-flight checklist
+    pf_results = run_pre_flight(model, call_text)
+    if verbose:
+        print("  Pass 0: Pre-flight checklist complete")
+
+    # EIC Pathfinder mode: call-specific scoring + strategic dimensions + future radar
+    eic_scores = None
+    strategic_scores = None
+    future_scores = None
+    if eic_pathfinder:
+        if verbose:
+            print("  Pass 3: EIC Pathfinder scoring...")
+        eic_scores = score_eic_pathfinder(model, result)
+        strategic_scores = score_strategic_dimensions(model)
+        if verbose:
+            print("  Pass 4: Future Tech Radar (3yr/5yr/10yr)...")
+        future_scores = score_future_tech_radar(model)
+
+    return result, model, smile_scores, pf_results, eic_scores, strategic_scores, future_scores
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="C.R.U.C.I.B.L.E. v3.0.0 — Full Horizon Europe proposal analyzer",
+        description="C.R.U.C.I.B.L.E. v4.0.0 — Full Horizon Europe proposal analyzer",
         epilog="Two-pass: Extract → Analyze. Built on SMILE methodology. Impact first, data last.",
     )
     parser.add_argument("pdf", help="Path to proposal PDF")
@@ -2093,6 +2888,8 @@ def main():
                         help="Enable budget analysis mode (additional cost checks)")
     parser.add_argument("--model", "-m", action="store_true",
                         help="Print the extracted ProposalModel and exit (debug)")
+    parser.add_argument("--eic-pathfinder", "-e", action="store_true",
+                        help="EIC Pathfinder Open mode: call-specific scoring + strategic dimensions")
 
     args = parser.parse_args()
 
@@ -2106,9 +2903,11 @@ def main():
         print(f"  Call text: {args.call}")
     if args.budget:
         print("  Budget mode: enabled")
+    if args.eic_pathfinder:
+        print("  EIC Pathfinder Open mode: enabled")
 
-    result, model, smile_scores = run_analysis(
-        args.pdf, args.call, args.verbose, args.budget
+    result, model, smile_scores, pf_results, eic_scores, strategic_scores, future_scores = run_analysis(
+        args.pdf, args.call, args.verbose, args.budget, args.eic_pathfinder
     )
 
     if args.model:
@@ -2116,7 +2915,9 @@ def main():
         sys.exit(0)
 
     report = format_report(result, args.pdf, model, smile_scores,
-                           bool(args.call), args.budget)
+                           bool(args.call), args.budget,
+                           args.eic_pathfinder, pf_results,
+                           eic_scores, strategic_scores, future_scores)
     print(report)
 
     if args.output:
@@ -2160,6 +2961,13 @@ def main():
             "scores": scores,
             "total": sum(scores.values()),
             "smile_coverage": smile_scores,
+            "eic_pathfinder_scores": eic_scores,
+            "strategic_dimensions": strategic_scores,
+            "pre_flight": [
+                {"id": q["id"], "question": q["question"],
+                 "weight": q["weight"], "result": r}
+                for q, r in (pf_results or [])
+            ],
             "findings": [
                 {
                     "pattern": f.pattern,
