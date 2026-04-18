@@ -64,6 +64,9 @@ async def analyze(
         )
         result, model, smile_scores, pf_results = output[0], output[1], output[2], output[3]
         eic_scores, strategic_scores, future_scores = output[4], output[5], output[6]
+        pestled_scores = output[7] if len(output) > 7 else None
+        interop_scores = output[8] if len(output) > 8 else None
+        stress_scores = output[9] if len(output) > 9 else None
     except Exception as e:
         raise HTTPException(500, f"Analysis failed: {str(e)}")
     finally:
@@ -92,6 +95,33 @@ async def analyze(
         eic_scores = None
         strategic_scores = None
         future_scores = None
+        pestled_scores = None
+        interop_scores = None
+        stress_scores = None
+
+    composite = None
+    if eic_scores and strategic_scores and future_scores and pestled_scores and interop_scores and stress_scores:
+        eic_avg = eic_scores.get("_weighted_total", 0)
+        strat_avg = strategic_scores.get("_weighted_avg", 0)
+        future_avg = future_scores.get("_weighted_avg", 0)
+        pestled_avg = pestled_scores.get("_weighted_avg", 0)
+        interop_avg = interop_scores.get("_weighted_avg", 0)
+        stress_avg = stress_scores.get("_overall", 0)
+        composite_score = (eic_avg * 0.35 + strat_avg * 0.15 + future_avg * 0.10 +
+                           pestled_avg * 0.15 + interop_avg * 0.15 + stress_avg * 0.10)
+        composite = {
+            "score": round(composite_score, 2),
+            "grade": ("S" if composite_score >= 4.5 else "A" if composite_score >= 4.0 else
+                      "B" if composite_score >= 3.5 else "C" if composite_score >= 3.0 else "D"),
+            "components": {
+                "eic_criteria": {"weight": 0.35, "score": round(eic_avg, 2)},
+                "strategic": {"weight": 0.15, "score": round(strat_avg, 2)},
+                "future_readiness": {"weight": 0.10, "score": round(future_avg, 2)},
+                "pestled": {"weight": 0.15, "score": round(pestled_avg, 2)},
+                "eu_interop": {"weight": 0.15, "score": round(interop_avg, 2)},
+                "stress_test": {"weight": 0.10, "score": round(stress_avg, 2)},
+            },
+        }
 
     return {
         "tool": "CRUCIBLE",
@@ -117,9 +147,14 @@ async def analyze(
         },
         "scores": scores,
         "total": round(sum(scores.values()), 1),
+        "composite": composite,
         "smile_coverage": smile_scores,
         "eic_pathfinder_scores": eic_scores,
         "strategic_dimensions": strategic_scores,
+        "future_tech_radar": future_scores,
+        "pestled_scores": pestled_scores,
+        "eu_interop_scores": interop_scores,
+        "stress_test_scores": stress_scores,
         "pre_flight": [
             {"id": q["id"], "question": q["question"], "weight": q["weight"], "result": r}
             for q, r in (pf_results or [])

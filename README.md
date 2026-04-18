@@ -50,8 +50,12 @@ CRUCIBLE uses a **two-pass architecture** that first extracts a structured model
 ```
 PDF ──► Pass 0: PRE-FLIGHT (10 gatekeeper checks)
     ──► Pass 1: EXTRACTION (build ProposalModel)
-    ──► Pass 2: ANALYSIS (4 layers, 45+ detectors)
+    ──► Pass 2: ANALYSIS (4 layers, 48+ detectors)
     ──► Pass 3: STRATEGIC SCORING (EIC Pathfinder mode)
+    ──► Pass 4: PESTELED (8-dimension regional environment)
+    ──► Pass 5: EU INTEROPERABILITY FRAMEWORK (7 layers)
+    ──► Pass 6: CONCEPT / CONTEXT / CRISIS (triple stress test)
+    ──► COMPOSITE SCORE (6-component weighted grade)
 ```
 
 ### Pass 0: Pre-Flight Checklist
@@ -182,6 +186,34 @@ Enabled with `--eic-pathfinder`. Adds:
 **Strategic dimensions:** Time to market, innovation depth, partnership strength, ecosystem play, regulatory readiness.
 
 **Future Tech Radar:** 3-year / 5-year / 10-year technology horizon scoring.
+
+### Pass 4: PESTELED — Regional Environment Analysis
+
+8-dimension external environment scan (Political, Economic, Social, Technological, Environmental, Legal, Ethical, Demographic). Checks whether the proposal demonstrates awareness of its operating context beyond the technical domain.
+
+### Pass 5: EU Interoperability Framework
+
+7-layer assessment based on the European Interoperability Framework: Technical, Syntactic, Semantic, Organizational, Legal, Contextual, Social. Scores whether the proposal's outputs will actually integrate with existing EU infrastructure and standards.
+
+### Pass 6: Concept / Context / Crisis — Triple Stress Test
+
+Three-lens resilience test:
+- **Concept** — Is the thesis falsifiable? Does it solve a real problem? Is there evidence it can work? What's the moat?
+- **Context** — Is the timing right? Does it align with EU priorities? Is there market pull?
+- **Crisis** — What if the approach fails? What if a partner drops out? What if the geopolitical context changes?
+
+### Composite CRUCIBLE Score
+
+6-component weighted grade (S/A/B/C/D):
+
+| Component | Weight |
+|-----------|--------|
+| EIC Criteria | 35% |
+| Strategic Dimensions | 15% |
+| Future Readiness | 10% |
+| PESTELED | 15% |
+| EU Interoperability | 15% |
+| Stress Test | 10% |
 
 ## CLI Reference
 

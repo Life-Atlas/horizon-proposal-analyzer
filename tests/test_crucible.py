@@ -23,6 +23,15 @@ from crucible import (
     run_analysis,
     estimate_scores,
     run_pre_flight,
+    score_pestled,
+    score_eu_interop,
+    score_stress_test,
+    format_pestled,
+    format_eu_interop,
+    format_stress_test,
+    PESTLED_DIMENSIONS,
+    EU_INTEROP_LAYERS,
+    STRESS_TEST,
     SMILE_PHASES,
     SMILE_PERSPECTIVES,
     PRE_FLIGHT_CHECKLIST,
@@ -204,3 +213,124 @@ class TestEdgeVerse:
         result, _, _, _ = analysis
         layers = set(f.layer for f in result.findings)
         assert len(layers) >= 2, f"Findings only in layers: {layers}"
+
+
+class TestPESTLED:
+    def test_has_eight_dimensions(self):
+        assert len(PESTLED_DIMENSIONS) == 8
+
+    def test_dimensions_have_required_fields(self):
+        for key, dim in PESTLED_DIMENSIONS.items():
+            assert "name" in dim
+            assert "description" in dim
+            assert "markers" in dim
+            assert "weight" in dim
+            assert len(dim["markers"]) > 0
+
+    def test_weights_sum_to_100(self):
+        total = sum(d["weight"] for d in PESTLED_DIMENSIONS.values())
+        assert total == 100
+
+    def test_score_returns_all_dimensions(self):
+        m = ProposalModel()
+        m.full_text = "government policy regulation market revenue cost community stakeholder ai edge drone sustainability gdpr compliance ethical transparency urban reconstruction"
+        scores = score_pestled(m)
+        for key in PESTLED_DIMENSIONS:
+            assert key in scores
+        assert "_weighted_avg" in scores
+        assert "_coverage" in scores
+
+    def test_score_range(self):
+        m = ProposalModel()
+        m.full_text = "test"
+        scores = score_pestled(m)
+        for key, val in scores.items():
+            if not key.startswith("_"):
+                assert 1.0 <= val["score"] <= 5.0
+
+    def test_format_returns_lines(self):
+        m = ProposalModel()
+        m.full_text = "government market community ai sustainability gdpr ethical urban"
+        scores = score_pestled(m)
+        lines = format_pestled(scores)
+        assert len(lines) > 0
+        assert any("PESTLE+D" in l for l in lines)
+
+
+class TestEUInterop:
+    def test_has_seven_layers(self):
+        assert len(EU_INTEROP_LAYERS) == 7
+
+    def test_layers_have_required_fields(self):
+        for key, layer in EU_INTEROP_LAYERS.items():
+            assert "name" in layer
+            assert "description" in layer
+            assert "markers" in layer
+            assert "weight" in layer
+
+    def test_weights_sum_to_100(self):
+        total = sum(l["weight"] for l in EU_INTEROP_LAYERS.values())
+        assert total == 100
+
+    def test_score_returns_all_layers(self):
+        m = ProposalModel()
+        m.full_text = "api protocol citygml schema ontology governance license context trust community"
+        scores = score_eu_interop(m)
+        for key in EU_INTEROP_LAYERS:
+            assert key in scores
+        assert "_weighted_avg" in scores
+        assert "_maturity" in scores
+
+    def test_format_returns_lines(self):
+        m = ProposalModel()
+        m.full_text = "api schema ontology governance license context trust"
+        scores = score_eu_interop(m)
+        lines = format_eu_interop(scores)
+        assert len(lines) > 0
+        assert any("INTEROP" in l for l in lines)
+
+
+class TestStressTest:
+    def test_has_three_lenses(self):
+        assert "concept" in STRESS_TEST
+        assert "context" in STRESS_TEST
+        assert "crisis" in STRESS_TEST
+
+    def test_each_lens_has_checks(self):
+        for key, test in STRESS_TEST.items():
+            assert "name" in test
+            assert "checks" in test
+            assert len(test["checks"]) == 5
+
+    def test_checks_have_required_fields(self):
+        for key, test in STRESS_TEST.items():
+            for check in test["checks"]:
+                assert "id" in check
+                assert "question" in check
+                assert "positive" in check
+                assert "negative" in check
+                assert "weight" in check
+
+    def test_score_returns_all_lenses(self):
+        m = ProposalModel()
+        m.full_text = "proof of principle bottleneck demonstrated network effect track record why now green deal easa customer uk fallback deputy cambridge open-source phase"
+        scores = score_stress_test(m)
+        assert "concept" in scores
+        assert "context" in scores
+        assert "crisis" in scores
+        assert "_overall" in scores
+        assert "_verdict" in scores
+
+    def test_verdict_categories(self):
+        m = ProposalModel()
+        m.full_text = "test"
+        scores = score_stress_test(m)
+        assert scores["_verdict"] in ("STRESS-TESTED", "PARTIALLY RESILIENT", "FRAGILE")
+
+    def test_format_returns_lines(self):
+        m = ProposalModel()
+        m.full_text = "proof of principle bottleneck demonstrated network effect track record"
+        scores = score_stress_test(m)
+        lines = format_stress_test(scores)
+        assert len(lines) > 0
+        assert any("STRESS TEST" in l for l in lines)
