@@ -127,27 +127,38 @@
 
 | Tier | Price | Gate | Target |
 |------|-------|------|--------|
-| Free | €0 | Layer 4 only, 3/month, no PDF export | Try → Convert |
-| Pro | €49/mo (€39 annual) | Full 4 layers, SMILE, call align, unlimited, PDF+JSON | Individual researchers, SMEs |
-| Enterprise | €199/mo | API, teams, batch, custom SMILE, priority support | Research offices, NCPs |
-| Pay-per-use | €9.90/analysis | Full analysis, no subscription | One-off users near deadline |
+| Free | €0 | Layer 4 only, top 5 findings, no export | Try → Convert |
+| Single | €9.90/analysis | All 4 layers, 25 findings, SMILE, score estimate | One-off near deadline |
+| Pro | €49/mo (€39 annual) | Full analysis, unlimited, PDF+JSON, call alignment | Individual researchers, SMEs |
+| Enterprise | €199/mo | API, teams, batch, composite scoring, priority support | Research offices, NCPs |
 
 ## Feature Gating
 
-| Feature | Free | Pro | Enterprise |
-|---------|------|-----|-----------|
-| Layer 4: Anti-patterns | ✓ (top 10 only) | ✓ (all 45+) | ✓ |
-| Layer 1: Structural integrity | Basic | Full | Full |
-| Layer 2: Call alignment | ✗ | ✓ | ✓ |
-| Layer 3: SMILE radar | ✗ | ✓ | ✓ + custom config |
-| Score estimate | ✗ | ✓ | ✓ |
-| PDF report | ✗ | ✓ | ✓ + white-label |
-| JSON export | ✗ | ✓ | ✓ |
-| Proposals/month | 3 | Unlimited | Unlimited |
-| Call text library | ✗ | ✗ | ✓ |
-| API access | ✗ | ✗ | ✓ |
-| Team accounts | ✗ | ✗ | ✓ (up to 10) |
-| Batch analysis | ✗ | ✗ | ✓ |
+| Feature | Free | Single | Pro | Enterprise |
+|---------|------|--------|-----|-----------|
+| Layer 4: Anti-patterns | ✓ (top 5) | ✓ (top 25) | ✓ (all 45+) | ✓ |
+| Layer 1: Structural integrity | ✗ | ✓ | ✓ | ✓ |
+| Layer 2: Call alignment | ✗ | ✓ | ✓ | ✓ |
+| Layer 3: SMILE radar | ✗ | ✓ | ✓ | ✓ + custom config |
+| Score estimate | ✗ | ✓ | ✓ | ✓ |
+| EIC Pathfinder scoring | ✗ | ✗ | ✗ | ✓ |
+| Strategic dimensions | ✗ | ✗ | ✗ | ✓ |
+| PESTLE+D analysis | ✗ | ✗ | ✗ | ✓ |
+| EU Interop scoring | ✗ | ✗ | ✗ | ✓ |
+| Stress test | ✗ | ✗ | ✗ | ✓ |
+| Composite score | ✗ | ✗ | ✗ | ✓ |
+| PDF report | ✗ | ✗ | ✓ | ✓ + white-label |
+| JSON export | ✗ | ✗ | ✓ | ✓ |
+| Proposals/month | 3 | Pay-per-use | Unlimited | Unlimited |
+| API access | ✗ | ✗ | ✗ | ✓ |
+| Team accounts | ✗ | ✗ | ✗ | ✓ (up to 10) |
+| Batch analysis | ✗ | ✗ | ✗ | ✓ |
+
+## Open-Core Model
+
+- **CRUCIBLE** (this repo): MIT-licensed CLI tool. Full analysis engine, all detectors, all layers. Free forever.
+- **TURTLESHELL** (SaaS product): Commercial web app at crucible.winniio.io. Tier-gated API access via server.py.
+- The CLI is the gift. The SaaS is the business. Open source drives awareness → conversion to paid tiers.
 
 ## Competitive Landscape
 

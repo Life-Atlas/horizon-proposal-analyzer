@@ -2,12 +2,14 @@
 
 **Consortia Review Under Controlled Interrogation — Before Live Evaluation**
 
-Static analysis tool for Horizon Europe proposals. Detects **45+ anti-patterns** across 4 layers, estimates evaluator scores, and checks alignment with SMILE methodology — all in 60 seconds from a single PDF.
+Open-source static analysis engine for Horizon Europe proposals. Detects **48+ anti-patterns** across 4 layers, estimates evaluator scores, and checks alignment with SMILE methodology — all in 60 seconds from a single PDF.
 
 Built from a real post-mortem of a submitted Horizon Europe Innovation Action. Every detector maps to something evaluators actually flag.
 
+> **TURTLESHELL** — the commercial SaaS product powered by CRUCIBLE — is available at [crucible.winniio.io](https://crucible.winniio.io). Upload your PDF, get a scored report with findings, SMILE radar, and export options. Free tier available.
+
 ```
-  C.R.U.C.I.B.L.E. v4.0.0
+  C.R.U.C.I.B.L.E. v5.1.0
   File:       proposal.pdf (246 pages)
   Part B:     pp. 148-246 (98 pages)
   Findings:   42
@@ -128,20 +130,20 @@ Requires `--call` flag with call/topic text file:
 
 **SMILE methodology** — Sustainable Methodology for Impact Lifecycle Enablement:
 
-| Phase | What It Checks |
-|-------|---------------|
-| 1. Reality Emulation | Digital twin / simulation / modeling language |
-| 2. System Resonance | Multi-stakeholder engagement, co-creation |
-| 3. Intelligent Calibration | AI/ML integration, feedback loops |
-| 4. Lifecycle Integration | Sustainability, circular economy, long-term |
-| 5. Evolutionary Scaling | Scalability plan, replication strategy |
-| 6. Perpetual Wisdom | Knowledge management, continuous learning |
+| Phase | Abbr | What It Checks |
+|-------|------|---------------|
+| 1. Reality Emulation | RE | Digital twin / simulation / modeling language |
+| 2. Concurrent Engineering | CE | Multi-stakeholder co-creation, parallel development |
+| 3. Collective Intelligence | CI | AI/ML integration, crowd wisdom, feedback loops |
+| 4. Contextual Intelligence | CX | Domain awareness, regulatory context, localization |
+| 5. Continuous Intelligence | CN | Real-time monitoring, adaptive learning, evolution |
+| 6. Perpetual Wisdom | PW | Knowledge management, institutional memory, long-term learning |
 
-Plus three perspectives: **People**, **Systems**, **Planet**.
+Three perspectives: **People**, **Systems**, **Planet**.
 
 SMILE principle enforcement: _Impact first, data last_ — penalizes proposals that lead with data/technology before establishing the problem.
 
-#### Layer 4: Anti-Patterns (45+ Detectors)
+#### Layer 4: Anti-Patterns (48+ Detectors)
 
 | Detector | Severity | What It Catches |
 |----------|----------|-----------------|
@@ -166,6 +168,9 @@ SMILE principle enforcement: _Impact first, data last_ — penalizes proposals t
 | Budget Narrative Gaps | MEDIUM | Missing justification for major cost items |
 | Consortium Diversity | LOW | Geographic/sector concentration |
 | Orphaned Acronyms | LOW | Acronyms used but never defined |
+| Evaluator Readability | HIGH | Flesch-Kincaid score too high, dense paragraphs |
+| Theory of Change | CRITICAL | No causal chain from outputs → outcomes → impact |
+| Gender Dimension | MEDIUM | Missing gender balance statement or gender research content |
 
 ### Pass 3: Strategic Scoring (EIC Pathfinder Mode)
 
@@ -311,11 +316,26 @@ To add a new call type:
 
 Built from a post-mortem of the EDGE-VERSE proposal (HORIZON-CL4-2026-04-HUMAN-01), an 18-partner Innovation Action for Virtual Worlds and Web 4.0. The initial 25 anti-patterns grew to 45+ through systematic study of evaluator guidelines, the Horizon Europe Model Grant Agreement, and template v10.0.
 
+## API Server
+
+CRUCIBLE includes a FastAPI wrapper for SaaS integration:
+
+```bash
+pip install -r requirements.txt
+uvicorn server:app --host 0.0.0.0 --port 8100
+```
+
+**Endpoints:**
+- `GET /health` — engine status and version
+- `POST /analyze` — multipart/form-data with `pdf` (required), `call_text` (optional), `tier` (free/single/pro/enterprise)
+
+Tier gating is handled in `server.py` — the CLI always returns full results.
+
 ## SMILE Methodology
 
 CRUCIBLE is built on the [SMILE methodology](https://winniio.io) (Sustainable Methodology for Impact Lifecycle Enablement) — a framework that enforces **Impact first, data last**. Every proposal should flow from desired outcome backward to required data, not from available data forward to hoped-for impact.
 
-The six SMILE phases ensure proposals cover the full lifecycle: from reality modeling through stakeholder resonance, intelligent calibration, lifecycle integration, evolutionary scaling, to perpetual wisdom capture.
+SMILE is the foundational methodology that shapes the [Life Programmable Interface (LPI)](https://lifeatlas.online) — the sovereign consultation layer at the heart of Life Atlas. The six SMILE phases (Reality Emulation → Concurrent Engineering → Collective Intelligence → Contextual Intelligence → Continuous Intelligence → Perpetual Wisdom) provide the lifecycle structure; the LPI operationalizes it across all domains.
 
 ## License
 
