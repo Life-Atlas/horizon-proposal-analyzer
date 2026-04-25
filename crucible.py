@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-C.R.U.C.I.B.L.E. v5.0.0
+C.R.U.C.I.B.L.E. v5.1.0
 Consortia Review Under Controlled Interrogation — Before Live Evaluation
 
 Two-pass full-proposal analyzer for Horizon Europe.
 EIC Pathfinder Open call-specific evaluation, pre-flight checklist,
-PESTLE+D regional analysis, EU Interoperability Framework, and stress testing.
+PESTELED regional analysis, EU Interoperability Framework, and stress testing.
 
 Pass 0: PRE-FLIGHT — 10 gatekeeper questions before analysis runs
 Pass 1: EXTRACTION — build a structured ProposalModel from the entire PDF
@@ -15,7 +15,7 @@ Pass 2: ANALYSIS — four layers
   Layer 3: FIELD & SMILE         — field awareness + SMILE methodology
   Layer 4: ANTI-PATTERNS         — 45+ mechanical checks
 Pass 3: STRATEGIC SCORING — time to market, innovation depth, partnerships, etc.
-Pass 4: PESTLE+D — regional environment analysis across 8 dimensions
+Pass 4: PESTELED — regional environment analysis across 8 dimensions
 Pass 5: EU INTEROPERABILITY FRAMEWORK — 7-layer interoperability assessment
 Pass 6: CONCEPT / CONTEXT / CRISIS — triple stress test
 
@@ -45,7 +45,682 @@ except ImportError:
     print("ERROR: pymupdf required. Install with: pip install pymupdf")
     sys.exit(1)
 
-__version__ = "5.1.0"
+__version__ = "6.0.0"
+
+
+# ============================================================
+# LANGUAGE DETECTION — auto-detect from document text
+# ============================================================
+
+_LANG_FINGERPRINTS: dict[str, set[str]] = {
+    "sv": {"och", "att", "för", "med", "som", "är", "den", "ett", "av", "på",
+           "en", "det", "de", "vi", "till", "inte", "har", "om", "men", "sig",
+           "ska", "kan", "från", "genom", "inom", "denna", "dessa", "samt"},
+    "en": {"the", "and", "for", "with", "that", "this", "are", "from", "have",
+           "been", "will", "our", "we", "is", "in", "of", "to", "a", "it",
+           "which", "would", "their", "they", "between", "through", "into"},
+    "de": {"und", "der", "die", "das", "ist", "ein", "eine", "für", "mit",
+           "auf", "dem", "den", "von", "als", "nicht", "sich", "werden"},
+    "fr": {"les", "des", "une", "est", "dans", "pour", "sur", "avec", "qui",
+           "par", "sont", "cette", "nous", "leur", "mais", "être", "aux"},
+    "no": {"og", "som", "for", "med", "til", "fra", "kan", "har", "være",
+           "ikke", "skal", "ved", "alle", "også", "denne", "eller"},
+    "da": {"og", "som", "til", "med", "den", "kan", "har", "fra", "ikke",
+           "skal", "ved", "alle", "også", "denne", "eller", "efter"},
+    "fi": {"ja", "on", "ei", "että", "se", "joka", "ovat", "tai", "myös",
+           "voi", "niin", "kuin", "tämä", "olla", "sekä", "mukaan"},
+    "es": {"los", "las", "del", "una", "con", "para", "por", "como", "más",
+           "pero", "sus", "son", "está", "entre", "desde", "sobre"},
+    "it": {"gli", "dei", "una", "con", "per", "che", "del", "sono", "nella",
+           "dalla", "anche", "come", "più", "questo", "essere", "stato"},
+    "pt": {"dos", "das", "uma", "com", "para", "por", "como", "mais",
+           "mas", "seus", "são", "está", "entre", "desde", "sobre"},
+    "nl": {"het", "een", "van", "zijn", "dat", "met", "niet", "voor",
+           "ook", "als", "aan", "maar", "kan", "wordt", "deze"},
+    "pl": {"nie", "jest", "się", "jak", "ale", "dla", "ich", "tak",
+           "jest", "oraz", "który", "przez", "może", "tylko", "tego"},
+}
+
+
+def detect_language(text: str) -> str:
+    """Detect document language from word frequency fingerprints.
+
+    Returns ISO 639-1 code. Supports: sv, en, de, fr, no, da, fi, es, it, pt, nl, pl.
+    Falls back to 'en' if uncertain.
+    """
+    sample = text[:5000].lower()
+    words = re.findall(r"\b\w+\b", sample)
+    if not words:
+        return "en"
+    hits: dict[str, int] = {}
+    for lang, fingerprint in _LANG_FINGERPRINTS.items():
+        hits[lang] = sum(1 for w in words if w in fingerprint)
+    best = max(hits, key=hits.get)
+    if hits[best] < 3:
+        return "en"
+    # Norwegian/Danish disambiguation — check for Norwegian-specific words
+    if best in ("no", "da"):
+        no_specific = sum(1 for w in words if w in {"å", "av", "ble", "blir", "vært"})
+        da_specific = sum(1 for w in words if w in {"af", "blev", "bliver", "været"})
+        best = "no" if no_specific >= da_specific else "da"
+    return best
+
+
+# ============================================================
+# SPATIAL-TEMPORAL ANCHORING — WHERE and WHEN
+# ============================================================
+
+@dataclass
+class ProposalAnchor:
+    """Spatial-temporal context extracted from the document."""
+    language: str = "en"
+    country: str = ""           # ISO 3166-1 alpha-2
+    region: str = ""            # e.g. "Nordic", "DACH", "Southern Europe"
+    cities: list = field(default_factory=list)
+    funding_body: str = ""      # e.g. "Vinnova", "European Commission", "NSF"
+    funding_program: str = ""   # e.g. "Impact Innovation", "Horizon Europe", "SBIR"
+    submission_year: int = 0
+    project_start: str = ""
+    project_end: str = ""
+    word_count: int = 0
+    page_count: int = 0
+
+    @property
+    def doc_scale(self) -> str:
+        """Classify document size for scoring normalization."""
+        if self.page_count <= 5:
+            return "micro"       # e.g. abstracts, summaries
+        elif self.page_count <= 15:
+            return "compact"     # e.g. Vinnova, national grants
+        elif self.page_count <= 30:
+            return "standard"    # e.g. Horizon Europe Part B
+        else:
+            return "extended"    # e.g. full proposals with annexes
+
+
+_FUNDING_BODY_PATTERNS: list[tuple[str, str, str]] = [
+    # (regex, funding_body, funding_program)
+    (r"vinnova", "Vinnova", ""),
+    (r"impact\s*innovation", "Vinnova", "Impact Innovation"),
+    (r"horizon\s*europe", "European Commission", "Horizon Europe"),
+    (r"eic\s*pathfinder", "European Commission", "EIC Pathfinder"),
+    (r"erasmus", "European Commission", "Erasmus+"),
+    (r"interreg", "European Commission", "Interreg"),
+    (r"celtic.?next", "EUREKA", "CELTIC-NEXT"),
+    (r"eureka", "EUREKA", ""),
+    (r"nsf|national\s*science\s*foundation", "NSF", ""),
+    (r"darpa", "DARPA", ""),
+    (r"nato\s*diana", "NATO", "DIANA"),
+    (r"formas", "Formas", ""),
+    (r"energimyndigheten", "Energimyndigheten", ""),
+    (r"tillväxtverket", "Tillväxtverket", ""),
+    (r"swedish\s*metals", "Jernkontoret", "Swedish Metals and Minerals"),
+]
+
+_COUNTRY_PATTERNS: list[tuple[str, str, str]] = [
+    (r"sweden|sverige|svensk", "SE", "Nordic"),
+    (r"norway|norge|norsk", "NO", "Nordic"),
+    (r"denmark|danmark|dansk", "DK", "Nordic"),
+    (r"finland|suomi|finsk", "FI", "Nordic"),
+    (r"germany|deutschland|tysk", "DE", "DACH"),
+    (r"austria|österreich", "AT", "DACH"),
+    (r"switzerland|schweiz|suisse", "CH", "DACH"),
+    (r"france|français", "FR", "Western Europe"),
+    (r"united\s*kingdom|uk\b", "GB", "Western Europe"),
+    (r"netherlands|nederland", "NL", "Western Europe"),
+    (r"belgium|belgien", "BE", "Western Europe"),
+    (r"italy|italia", "IT", "Southern Europe"),
+    (r"spain|españa|spanien", "ES", "Southern Europe"),
+    (r"portugal", "PT", "Southern Europe"),
+    (r"greece|grekland", "GR", "Southern Europe"),
+    (r"poland|polska|polen", "PL", "Eastern Europe"),
+    (r"czech|tjeckien", "CZ", "Eastern Europe"),
+    (r"ukraine|ukraina", "UA", "Eastern Europe"),
+    (r"romania|rumänien", "RO", "Eastern Europe"),
+    (r"united\s*states|usa\b", "US", "North America"),
+    (r"japan|japansk", "JP", "East Asia"),
+    (r"china|kinesisk", "CN", "East Asia"),
+    (r"india|indien", "IN", "South Asia"),
+    (r"australia|australien", "AU", "Oceania"),
+]
+
+_CITY_PATTERNS: list[tuple[str, str]] = [
+    (r"stockholm", "SE"), (r"göteborg|gothenburg", "SE"), (r"malmö", "SE"),
+    (r"lidköping", "SE"), (r"linköping", "SE"), (r"lund", "SE"),
+    (r"cambridge", "GB"), (r"london", "GB"), (r"oxford", "GB"),
+    (r"berlin", "DE"), (r"munich|münchen", "DE"), (r"hamburg", "DE"),
+    (r"paris", "FR"), (r"lyon", "FR"),
+    (r"amsterdam", "NL"), (r"rotterdam", "NL"),
+    (r"brussels|bruxelles", "BE"),
+    (r"helsinki|helsingfors", "FI"), (r"oslo", "NO"), (r"copenhagen|köpenhamn", "DK"),
+    (r"zurich|zürich", "CH"), (r"vienna|wien", "AT"),
+    (r"kharkiv", "UA"), (r"kyiv|kiev", "UA"),
+]
+
+
+def detect_anchor(text: str, total_pages: int = 0) -> ProposalAnchor:
+    """Extract spatial-temporal anchor from proposal text."""
+    anchor = ProposalAnchor()
+    lower = text.lower()
+    words = re.findall(r"\b\w+\b", lower)
+    anchor.word_count = len(words)
+    anchor.page_count = total_pages
+    anchor.language = detect_language(text)
+
+    # Funding body detection
+    for pattern, body, program in _FUNDING_BODY_PATTERNS:
+        if re.search(pattern, lower):
+            anchor.funding_body = body
+            if program:
+                anchor.funding_program = program
+            break
+
+    # Country detection — accumulate mentions, pick dominant
+    country_hits: Counter = Counter()
+    region_hits: Counter = Counter()
+    for pattern, country, region in _COUNTRY_PATTERNS:
+        count = len(re.findall(pattern, lower))
+        if count > 0:
+            country_hits[country] += count
+            region_hits[region] += count
+    if country_hits:
+        anchor.country = country_hits.most_common(1)[0][0]
+    if region_hits:
+        anchor.region = region_hits.most_common(1)[0][0]
+
+    # City detection
+    for pattern, country in _CITY_PATTERNS:
+        if re.search(pattern, lower):
+            city = re.search(pattern, lower).group()
+            anchor.cities.append(city.title())
+
+    # Year detection
+    years = [int(y) for y in re.findall(r"\b(202[4-9]|203[0-9])\b", text)]
+    if years:
+        anchor.submission_year = min(years)
+
+    return anchor
+
+
+# ============================================================
+# DOCUMENT-LENGTH NORMALIZED SCORING
+# ============================================================
+
+# Reference benchmarks: expected marker hit rates by document scale
+_EXPECTED_HIT_RATES: dict[str, float] = {
+    "micro": 0.10,      # 1-5 pages: expect ~10% of markers
+    "compact": 0.25,     # 6-15 pages: expect ~25% of markers
+    "standard": 0.45,    # 16-30 pages: expect ~45% of markers
+    "extended": 0.60,    # 31+ pages: expect ~60% of markers
+}
+
+
+def _score_markers(found: int, total: int, doc_scale: str = "standard") -> float:
+    """Score marker hits normalized by document length.
+
+    Instead of raw_pct * 0.04, we compare the hit rate against what's
+    expected for this document size. A 12-page proposal hitting 25% of
+    markers scores the same as a 40-page proposal hitting 45%.
+
+    Returns score on 1.0-5.0 scale.
+    """
+    if total == 0:
+        return 1.0
+    hit_rate = found / total
+    expected = _EXPECTED_HIT_RATES.get(doc_scale, 0.45)
+    # Normalized ratio: 1.0 means hitting expectations perfectly
+    ratio = hit_rate / expected if expected > 0 else 0
+    # Map ratio to 1.0-5.0: ratio 0→1.0, ratio 0.5→2.5, ratio 1.0→4.0, ratio 1.25+→5.0
+    score = 1.0 + ratio * 3.0
+    return round(max(1.0, min(5.0, score)), 1)
+
+
+# ============================================================
+# DYNAMIC TRANSLATION — LLM-powered (paid) or _LEXICON fallback (free)
+# ============================================================
+
+_translation_cache: dict[str, dict[str, list[str]]] = {}
+
+
+def _translate_markers_llm(markers: list[str], target_lang: str) -> dict[str, list[str]]:
+    """Translate English markers to target language via LLM API.
+
+    Returns dict mapping each English marker to its translations.
+    Requires ANTHROPIC_API_KEY or OPENAI_API_KEY in environment.
+    """
+    import os
+    api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CRUCIBLE_API_KEY")
+    if not api_key:
+        return {}
+
+    lang_names = {"sv": "Swedish", "de": "German", "fr": "French", "no": "Norwegian",
+                  "da": "Danish", "fi": "Finnish", "es": "Spanish", "it": "Italian",
+                  "pt": "Portuguese", "nl": "Dutch", "pl": "Polish", "ja": "Japanese",
+                  "zh": "Chinese", "ko": "Korean", "ru": "Russian", "uk": "Ukrainian",
+                  "ar": "Arabic", "hi": "Hindi", "tr": "Turkish", "cs": "Czech",
+                  "ro": "Romanian", "hu": "Hungarian", "el": "Greek"}
+    lang_name = lang_names.get(target_lang, target_lang)
+
+    prompt = (
+        f"Translate these English technical/academic terms to {lang_name}. "
+        f"Return ONLY a JSON object mapping each English term to a list of {lang_name} equivalents. "
+        f"Include common synonyms and domain-specific variants. "
+        f"Terms:\n{json.dumps(markers)}"
+    )
+
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages",
+            data=json.dumps({
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 4096,
+                "messages": [{"role": "user", "content": prompt}],
+            }).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = json.loads(resp.read())
+            text = body["content"][0]["text"]
+            # Extract JSON from response (may have markdown fences)
+            json_match = re.search(r"\{[\s\S]+\}", text)
+            if json_match:
+                return json.loads(json_match.group())
+    except Exception:
+        pass
+    return {}
+
+
+def _get_translations(markers: list[str], target_lang: str) -> dict[str, list[str]]:
+    """Get translations with caching. LLM first, _LEXICON fallback."""
+    if target_lang == "en":
+        return {}
+
+    cache_key = f"{target_lang}:{hash(tuple(sorted(markers)))}"
+    if cache_key in _translation_cache:
+        return _translation_cache[cache_key]
+
+    # Try LLM translation (paid tier)
+    translations = _translate_markers_llm(markers, target_lang)
+    if translations:
+        _translation_cache[cache_key] = translations
+        return translations
+
+    # Fallback: return empty (i18n lexicon handles it)
+    _translation_cache[cache_key] = {}
+    return {}
+
+
+# ============================================================
+# MULTILINGUAL LEXICON — offline fallback translation registry
+# English markers are canonical. _LEXICON provides offline SV/EN.
+# Dynamic LLM translation supplements this for other languages.
+# ============================================================
+
+_LEXICON: dict[str, list[str]] = {
+    # --- Core tech concepts ---
+    "digital twin": ["digital tvilling"],
+    "knowledge graph": ["kunskapsgraf"],
+    "supply chain": ["leveranskedja", "försörjningskedja"],
+    "machine learning": ["maskininlärning"],
+    "artificial intelligence": ["artificiell intelligens"],
+    "deep learning": ["djupinlärning"],
+    "edge": ["kant", "edge-nativt"],
+    "cloud": ["molnet", "moln"],
+    "open source": ["öppen källkod"],
+    "open-source": ["öppen källkod"],
+    "sensor": ["sensor", "givare"],
+    "drone": ["drönare"],
+    "uav": ["drönare"],
+    "automation": ["automatisering"],
+    "autonomous": ["autonom"],
+    "quantum": ["kvantdator", "kvantum"],
+    "platform": ["plattform"],
+    "interoperable": ["interoperabel"],
+    "api": ["gränssnitt"],
+    "standard": ["standard"],
+    "simulation": ["simulering"],
+    "prototype": ["prototyp"],
+    "testbed": ["testbädd"],
+    "deployment": ["driftsättning"],
+    "infrastructure": ["infrastruktur"],
+    "ontology": ["ontologi"],
+    "taxonomy": ["taxonomi"],
+    "semantic": ["semantik"],
+    "linked data": ["länkade data"],
+    "vocabulary": ["vokabulär"],
+    "terminology": ["terminologi"],
+    "classification": ["klassificering"],
+    "harmoniz": ["harmonisering"],
+    "standardiz": ["standardisering"],
+    # --- Impact / outcome ---
+    "sustainability": ["hållbarhet"],
+    "carbon": ["koldioxid"],
+    "energy": ["energi"],
+    "circular": ["cirkulär"],
+    "climate": ["klimat"],
+    "environmental": ["miljö"],
+    "emission": ["utsläpp"],
+    "renewable": ["förnybar"],
+    "waste": ["avfall"],
+    "biodiversity": ["biologisk mångfald"],
+    "life cycle": ["livscykel"],
+    "footprint": ["fotavtryck"],
+    "green deal": ["gröna given"],
+    # --- Policy / governance ---
+    "government": ["regering"],
+    "policy": ["politik"],
+    "regulation": ["reglering", "förordning"],
+    "ministry": ["ministerium"],
+    "public sector": ["offentlig sektor"],
+    "national": ["nationell"],
+    "sovereignty": ["suveränitet"],
+    "governance": ["styrning"],
+    "treaty": ["fördrag"],
+    "diplomacy": ["diplomati"],
+    "defence": ["försvar"],
+    "defense": ["försvar"],
+    "security policy": ["säkerhetspolitik"],
+    "national security": ["totalförsvar", "nationell säkerhet"],
+    "preparedness": ["beredskap"],
+    "civil defence": ["civilförsvar"],
+    # --- Social ---
+    "community": ["samhälle"],
+    "stakeholder": ["intressent"],
+    "citizen": ["medborgare"],
+    "workforce": ["arbetskraft"],
+    "inclusion": ["inkludering"],
+    "diversity": ["mångfald"],
+    "engagement": ["delaktighet"],
+    "co-creation": ["samskaping", "medskapande"],
+    "humanitarian": ["humanitär"],
+    "wellbeing": ["välbefinnande"],
+    "education": ["utbildning"],
+    "training": ["utbildning", "kompetens"],
+    "skill": ["kompetens", "färdighet"],
+    "user": ["användare"],
+    "adoption": ["adoption", "anammande"],
+    "trust": ["förtroende"],
+    "feedback": ["återkoppling"],
+    "accessibility": ["tillgänglighet"],
+    # --- Economic ---
+    "market": ["marknad"],
+    "revenue": ["intäkt"],
+    "cost": ["kostnad"],
+    "investment": ["investering"],
+    "economic": ["ekonomisk"],
+    "funding": ["finansiering"],
+    "budget": ["budget"],
+    "commercial": ["kommersiell"],
+    "pricing": ["prissättning"],
+    "licensing": ["licensiering"],
+    "billion": ["miljard"],
+    "growth": ["tillväxt"],
+    "trade": ["handel"],
+    "first customer": ["första kund"],
+    "pilot": ["pilot"],
+    "exploitation": ["nyttiggörande"],
+    "saas": ["tjänst"],
+    "business model": ["affärsmodell"],
+    # --- Legal ---
+    "license": ["licens"],
+    "compliance": ["efterlevnad"],
+    "intellectual property": ["immateriell"],
+    "ip": ["immateriell"],
+    "patent": ["patent"],
+    "data protection": ["dataskydd"],
+    "privacy": ["integritet"],
+    "consent": ["samtycke"],
+    "legal": ["juridisk"],
+    "liability": ["ansvar"],
+    "contract": ["kontrakt", "avtal"],
+    # --- Ethical ---
+    "ethical": ["etisk"],
+    "ethics": ["etik"],
+    "responsible": ["ansvarsfull"],
+    "bias": ["partiskhet", "snedvridning"],
+    "fairness": ["rättvisa"],
+    "transparency": ["transparens"],
+    "explainable": ["förklarbar"],
+    "accountab": ["ansvarighet"],
+    "dual-use": ["dubbel användning"],
+    "human rights": ["mänskliga rättigheter"],
+    "dignity": ["värdighet"],
+    "proportional": ["proportionerlig"],
+    "non-discrimination": ["icke-diskriminering"],
+    "audit": ["revision", "granskning"],
+    # --- Demographic ---
+    "population": ["befolkning"],
+    "urban": ["urban", "stadsplanering"],
+    "rural": ["rural", "landsbygd"],
+    "aging": ["åldrande"],
+    "migration": ["migration"],
+    "displacement": ["fördrivning"],
+    "reconstruction": ["återuppbyggnad"],
+    "city": ["stad"],
+    "municipality": ["kommun"],
+    "region": ["region"],
+    "cross-border": ["gränsöverskridande"],
+    "local": ["lokal"],
+    "global": ["global"],
+    "emerging market": ["tillväxtmarknad"],
+    "infrastructure gap": ["infrastrukturgap"],
+    # --- Consortium / team ---
+    "consortium": ["konsortium"],
+    "partner": ["partner"],
+    "coordinator": ["koordinator"],
+    "work package": ["arbetspaket"],
+    "steering": ["styrgrupp"],
+    "advisory": ["rådgivande"],
+    "board": ["styrelse"],
+    "process": ["process"],
+    "workflow": ["arbetsflöde"],
+    "role": ["roll"],
+    "responsibility": ["ansvar"],
+    "agreement": ["avtal"],
+    "commitment letter": ["åtagandebrev"],
+    "track record": ["meritlista"],
+    "key personnel": ["nyckelperson", "nyckelpersonal"],
+    "named researcher": ["namngiven forskare"],
+    "experience": ["erfarenhet"],
+    "expertise": ["kompetens"],
+    "prior project": ["tidigare projekt"],
+    "prior collaboration": ["tidigare samarbete"],
+    "delivered": ["levererat"],
+    "validated": ["validerat"],
+    "deployed": ["driftsatt"],
+    # --- Project structure ---
+    "task": ["uppgift"],
+    "deliverable": ["leverans", "leverabel"],
+    "milestone": ["milstolpe"],
+    "risk": ["risk"],
+    "mitigation": ["riskminskning", "åtgärd"],
+    "fallback": ["reservplan"],
+    "contingency": ["beredskapsplan"],
+    "phase": ["fas"],
+    "gate": ["grind"],
+    "person-month": ["personmånad"],
+    "fte": ["heltid"],
+    "personnel": ["personal"],
+    # --- Innovation ---
+    "novel": ["nytt", "nydanande"],
+    "first": ["först"],
+    "no prior": ["ingen tidigare"],
+    "paradigm": ["paradigm", "paradigmskifte"],
+    "beyond state of the art": ["bortom state of the art"],
+    "foundational": ["grundläggande"],
+    "proof of principle": ["bevis på princip"],
+    "hypothesis": ["hypotes"],
+    "falsifiable": ["falsifierbar"],
+    "measurable": ["mätbar"],
+    "benchmark": ["riktmärke"],
+    "kpi": ["nyckeltal"],
+    # --- Problem / need ---
+    "bottleneck": ["flaskhals"],
+    "manual": ["manuell"],
+    "time-consuming": ["tidskrävande"],
+    "unmet need": ["ej tillgodosett behov"],
+    "pain point": ["smärtpunkt"],
+    "customer": ["kund"],
+    "user need": ["användarbehov"],
+    "operator": ["operatör"],
+    "demonstrated": ["demonstrerat"],
+    "preliminary": ["preliminär"],
+    "feasibility": ["genomförbarhet"],
+    "proof": ["bevis"],
+    # --- Resilience / security ---
+    "resilience": ["resiliens", "motståndskraft"],
+    "security": ["säkerhet"],
+    "clearance": ["behörighet"],
+    "access control": ["åtkomstkontroll"],
+    "encryption": ["kryptering"],
+    "classified": ["sekretess"],
+    "cyber": ["cyber"],
+    "threat": ["hotbild", "hot"],
+    "vulnerability": ["sårbarhet"],
+    "zero trust": ["nolltillit"],
+    "attack surface": ["attackyta"],
+    # --- Scaling ---
+    "network effect": ["nätverkseffekt"],
+    "first-mover": ["first mover"],
+    "ecosystem": ["ekosystem"],
+    "replicat": ["replikerbar"],
+    "scal": ["skalning", "skalbar"],
+    "roll-out": ["utrullning"],
+    "dissemination": ["spridning"],
+    "publication": ["publikation"],
+    "conference": ["konferens"],
+    "workshop": ["workshop"],
+    "open data": ["öppna data"],
+    "open access": ["öppen tillgång"],
+    "open science": ["öppen vetenskap"],
+    # --- Manufacturing / domain ---
+    "production": ["produktion"],
+    "factory": ["fabrik"],
+    "manufacturing": ["tillverkning"],
+    "assembly": ["montering"],
+    "welding": ["svetsning"],
+    "steel": ["stål"],
+    "metal": ["metall"],
+    "capacity": ["kapacitet"],
+    "planning": ["planering"],
+    "scheduling": ["schemaläggning"],
+    "quality": ["kvalitet"],
+    "lean": ["lean"],
+    "predictive maintenance": ["prediktivt underhåll"],
+    # --- Spatial / 3D ---
+    "spatial": ["rumslig"],
+    "3d": ["3d"],
+    "point cloud": ["punktmoln"],
+    "bim": ["bim"],
+    "gis": ["gis"],
+    # --- War / crisis ---
+    "conflict": ["konflikt"],
+    "contested": ["omtvistad"],
+    "mobilization": ["mobilisering"],
+    "wartime": ["krigstid"],
+    "heightened readiness": ["höjd beredskap"],
+    "deputy": ["ersättare"],
+    "backup": ["backup"],
+    "redundancy": ["redundans"],
+    "modular": ["modulär"],
+    "distributed": ["distribuerad"],
+    "self-fund": ["självfinansiering"],
+    "phased": ["fasad"],
+    "incremental": ["inkrementell"],
+    "minimum viable": ["minsta livskraftig"],
+    # --- Vinnova / Swedish national funding ---
+    "innovation": ["innovation"],
+    "impact": ["effekt", "genomslagskraft"],
+    "resilient": ["resilient", "motståndskraftig"],
+    "supply chain resilience": ["leveranskedjeresiliens"],
+    "total defence": ["totalförsvar"],
+    "heightened alert": ["höjd beredskap", "skärpt beredskap"],
+    "defence industry": ["försvarsindustri"],
+    "sme": ["sme", "små och medelstora företag"],
+    "knowledge externalization": ["kunskapsexternalisering"],
+    "tacit knowledge": ["tyst kunskap"],
+    "capacity model": ["kapacitetsmodell"],
+    "key person risk": ["nyckelpersonberoende", "nyckelpersonrisk"],
+    "scenario analysis": ["scenarioanalys"],
+    "work plan": ["arbetsplan", "projektplan"],
+    "budget": ["budget", "kostnadsbudget"],
+    "co-financing": ["medfinansiering"],
+    "dissemination": ["spridning", "kunskapsspridning"],
+    "transferability": ["överförbarhet"],
+    "replication": ["replikering", "replikerbar"],
+    "use case": ["användningsfall"],
+    "domain": ["domän"],
+    "decision support": ["beslutsstöd"],
+    "monitoring": ["övervakning"],
+    "analytics": ["analys", "analysverktyg"],
+    "predictive": ["prediktiv"],
+    "prescriptive": ["preskriptiv"],
+    "real-time": ["realtid", "realtids"],
+    "dashboard": ["instrumentpanel", "dashboard"],
+    "feedback loop": ["återkopplingsslinga"],
+    "continuous": ["kontinuerlig"],
+    "self-improving": ["självförbättrande"],
+    # --- SMILE phase terms ---
+    "stakeholder mapping": ["intressentanalys", "intressentkartläggning"],
+    "stakeholder analysis": ["intressentanalys"],
+    "ecosystem boundary": ["ekosystemgräns", "systemgräns"],
+    "spatial context": ["rumslig kontext"],
+    "temporal context": ["tidsmässig kontext"],
+    "operating context": ["driftskontext", "verksamhetskontext"],
+    "root cause": ["grundorsak", "rotorsak"],
+    "as-is": ["nuläge", "nuvarande"],
+    "to-be": ["börläge", "önskat läge"],
+    "validate": ["validera"],
+    "scenario": ["scenario"],
+    "proof of concept": ["konceptbevis"],
+    "acceptance criteria": ["acceptanskriterier"],
+    "data model": ["datamodell"],
+    "schema": ["schema"],
+    "metadata": ["metadata"],
+    "integration": ["integrering", "integration"],
+    "alert": ["larm", "varning"],
+    "model training": ["modellträning"],
+    "sustainability plan": ["hållbarhetsplan"],
+    "open access": ["öppen tillgång"],
+    # --- Strategic dimension terms ---
+    "first customer": ["första kund", "pilotanvändare"],
+    "spin-off": ["avknoppning"],
+    "letter of intent": ["avsiktsförklaring"],
+    "commitment letter": ["åtagandebrev", "avsiktsförklaring"],
+    "track record": ["meritlista", "tidigare erfarenhet"],
+    "deliverable": ["leverans", "leverabel", "delleverans"],
+    "work package": ["arbetspaket", "projektpaket"],
+    "gender": ["jämställdhet", "kön", "genus"],
+    "gender balance": ["jämställdhet", "könsbalans"],
+}
+
+
+def _i18n(markers: list) -> list:
+    """Expand English markers with all known translations from _LEXICON.
+
+    Returns a flat deduplicated list. The scoring algorithm stays the same —
+    it counts marker hits in a flat list. A Swedish doc hits Swedish translations,
+    English hits English. No language branching in scoring logic.
+
+    Matching: exact key match only. Add compound terms to _LEXICON explicitly.
+    """
+    expanded = list(markers)
+    for m in markers:
+        key = m.lower()
+        if key in _LEXICON:
+            expanded.extend(_LEXICON[key])
+    seen = set()
+    deduped = []
+    for item in expanded:
+        if item not in seen:
+            seen.add(item)
+            deduped.append(item)
+    return deduped
 
 
 # ============================================================
@@ -151,11 +826,11 @@ EIC_PATHFINDER_CRITERIA = {
             "1a_vision": {
                 "name": "Long-term vision",
                 "question": "How convincing is the vision of a radically new technology?",
-                "markers_positive": [
+                "markers_positive": _i18n([
                     "radically new", "paradigm", "transformative", "foundational",
                     "computational primitive", "new class of", "first-of-its-kind",
                     "no equivalent exists", "game-changing",
-                ],
+                ]),
                 "markers_negative": [
                     "incremental", "improvement", "extension of", "building on existing",
                     "minor advancement",
@@ -164,11 +839,11 @@ EIC_PATHFINDER_CRITERIA = {
             "1b_breakthrough": {
                 "name": "Science-towards-technology breakthrough",
                 "question": "How concrete, novel, and ambitious is the proposed breakthrough?",
-                "markers_positive": [
+                "markers_positive": _i18n([
                     "first automated", "first validated", "first open-source",
                     "first demonstration", "no prior", "novel contribution",
                     "beyond state of the art", "proof of principle",
-                ],
+                ]),
                 "markers_negative": [
                     "well-known", "established method", "standard approach",
                 ],
@@ -176,24 +851,24 @@ EIC_PATHFINDER_CRITERIA = {
             "1c_objectives": {
                 "name": "Objectives and methodology",
                 "question": "How concrete/plausible are objectives? How sound is methodology?",
-                "markers_positive": [
+                "markers_positive": _i18n([
                     "high-risk/high-gain", "proof of principle", "fallback",
                     "alternative direction", "risk mitigation", "validation protocol",
                     "statistical", "cross-validation", "confidence interval",
                     "open science",
-                ],
+                ]),
                 "markers_negative": [
-                    "will develop", "will create", "will implement",  # vague verbs without method
+                    "will develop", "will create", "will implement",
                 ],
             },
             "1d_interdisciplinary": {
                 "name": "Interdisciplinarity",
                 "question": "How relevant is interdisciplinary approach from distant disciplines?",
-                "markers_positive": [
+                "markers_positive": _i18n([
                     "interdisciplinary", "cross-disciplinary", "traditionally separate",
                     "computer vision", "materials science", "rf propagation",
                     "privacy engineering", "humanitarian",
-                ],
+                ]),
                 "markers_negative": [],
             },
         },
@@ -205,33 +880,33 @@ EIC_PATHFINDER_CRITERIA = {
             "2a_long_term_impact": {
                 "name": "Long-term impact",
                 "question": "How significant are potential transformative effects on economy/society?",
-                "markers_positive": [
+                "markers_positive": _i18n([
                     "eur", "billion", "trillion", "market",
                     "reconstruction", "5g", "6g", "urban air mobility",
                     "regulatory", "policy", "green deal", "digital decade",
-                ],
+                ]),
                 "markers_negative": [],
             },
             "2b_innovation_potential": {
                 "name": "Innovation potential",
                 "question": "Potential for disruptive innovations? IP protection? Key actor involvement?",
-                "markers_positive": [
+                "markers_positive": _i18n([
                     "disruptive", "new market", "exploitation", "ip protection",
                     "patent", "license", "spin-off", "letter of intent",
                     "first customer", "revenue", "commercial",
-                ],
+                ]),
                 "markers_negative": [
-                    "results will be", "partners will", "will integrate",  # generic exploitation
+                    "results will be", "partners will", "will integrate",
                 ],
             },
             "2c_communication": {
                 "name": "Communication and dissemination",
                 "question": "Measures for scientific publications, communication, awareness?",
-                "markers_positive": [
+                "markers_positive": _i18n([
                     "publication", "conference", "workshop", "open data",
                     "zenodo", "ieee dataport", "community", "hackathon",
                     "standards contribution", "3gpp", "etsi", "ogc",
-                ],
+                ]),
                 "markers_negative": [],
             },
         },
@@ -243,11 +918,11 @@ EIC_PATHFINDER_CRITERIA = {
             "3a_work_plan": {
                 "name": "Work plan quality",
                 "question": "How coherent/effective are WPs, tasks, milestones, risk mitigation?",
-                "markers_positive": [
+                "markers_positive": _i18n([
                     "work package", "task", "deliverable", "milestone",
                     "risk", "mitigation", "fallback", "contingency",
                     "phase", "gate",
-                ],
+                ]),
                 "markers_negative": [
                     "tbd", "to be determined", "to be defined",
                 ],
@@ -255,20 +930,20 @@ EIC_PATHFINDER_CRITERIA = {
             "3b_resources": {
                 "name": "Resource allocation",
                 "question": "How appropriate is allocation of person-months and costs?",
-                "markers_positive": [
+                "markers_positive": _i18n([
                     "person-month", "pm", "fte", "equipment",
                     "budget", "personnel", "subcontracting",
-                ],
+                ]),
                 "markers_negative": [],
             },
             "3c_consortium": {
                 "name": "Consortium quality",
                 "question": "Do all members have necessary capacity and expertise?",
-                "markers_positive": [
+                "markers_positive": _i18n([
                     "track record", "prior project", "publication",
                     "experience", "expertise", "key personnel",
                     "named researcher", "deputy", "commitment letter",
-                ],
+                ]),
                 "markers_negative": [
                     "to be hired", "tbd", "to be recruited",
                 ],
@@ -286,63 +961,63 @@ STRATEGIC_DIMENSIONS = {
     "time_to_market": {
         "name": "Time to Market",
         "description": "How quickly can results become products/services?",
-        "markers": ["m36", "m42", "m48", "first customer", "pilot", "commercial",
-                     "revenue", "saas", "licensing", "exploitation"],
+        "markers": _i18n(["m36", "m42", "m48", "first customer", "pilot", "commercial",
+                          "revenue", "saas", "licensing", "exploitation"]),
         "weight": 15,
     },
     "innovation_depth": {
         "name": "Innovation Depth",
         "description": "How genuinely novel is the core contribution?",
-        "markers": ["first", "no prior", "novel", "new computational",
-                     "paradigm", "proof of principle", "radically new",
-                     "beyond state of the art", "foundational"],
+        "markers": _i18n(["first", "no prior", "novel", "new computational",
+                          "paradigm", "proof of principle", "radically new",
+                          "beyond state of the art", "foundational"]),
         "weight": 20,
     },
     "partnership_strength": {
         "name": "Partnership Strength",
         "description": "How credible and committed are the partners?",
-        "markers": ["commitment letter", "prior collaboration", "track record",
-                     "key personnel", "named researcher", "deputy",
-                     "commercial engine", "200+ operator"],
+        "markers": _i18n(["commitment letter", "prior collaboration", "track record",
+                          "key personnel", "named researcher", "deputy",
+                          "commercial engine", "200+ operator"]),
         "weight": 15,
     },
     "defensibility": {
         "name": "Defensibility / Moat",
         "description": "What prevents competitors from replicating?",
-        "markers": ["network effect", "open-source", "benchmark dataset",
-                     "standards contribution", "first-mover",
-                     "accumulating", "cross-validated"],
+        "markers": _i18n(["network effect", "open-source", "benchmark dataset",
+                          "standards contribution", "first-mover",
+                          "accumulating", "cross-validated"]),
         "weight": 10,
     },
     "market_size": {
         "name": "Market Size & Clarity",
         "description": "Is the addressable market credibly sized?",
-        "markers": ["eur", "billion", "trillion", "addressable",
-                     "segment", "target", "sub-segment"],
+        "markers": _i18n(["eur", "billion", "trillion", "addressable",
+                          "segment", "target", "sub-segment"]),
         "weight": 10,
     },
     "team_execution": {
         "name": "Team Execution Capability",
         "description": "Can this team actually deliver?",
-        "markers": ["consultant", "fte", "hire", "operational capacity",
-                     "prior project", "delivered", "validated",
-                     "testbed", "deployed"],
+        "markers": _i18n(["consultant", "fte", "hire", "operational capacity",
+                          "prior project", "delivered", "validated",
+                          "testbed", "deployed"]),
         "weight": 10,
     },
     "policy_alignment": {
         "name": "EU Policy Alignment",
         "description": "How well does this serve EU strategic priorities?",
-        "markers": ["green deal", "digital decade", "ukraine",
-                     "reconstruction", "sovereignty", "open science",
-                     "u-space", "easa", "gdpr", "fair"],
+        "markers": _i18n(["green deal", "digital decade", "ukraine",
+                          "reconstruction", "sovereignty", "open science",
+                          "u-space", "easa", "gdpr", "fair"]),
         "weight": 10,
     },
     "wow_factor": {
         "name": "Wow Factor / Memorability",
         "description": "Will an evaluator remember this proposal after reading 50?",
-        "markers": ["pagerank for physical space", "computational primitive",
-                     "spatial index", "no equivalent exists",
-                     "contested environment", "post-conflict"],
+        "markers": _i18n(["pagerank for physical space", "computational primitive",
+                          "spatial index", "no equivalent exists",
+                          "contested environment", "post-conflict"]),
         "weight": 10,
     },
 }
@@ -362,104 +1037,104 @@ FUTURE_TECH_RADAR = {
         "name": "Edge-Native / Local-First",
         "horizon": "3yr",
         "horizon_desc": "2028-2030: Edge AI becomes default. Cloud-first is legacy.",
-        "markers": ["edge", "local-first", "on-device", "edge compute", "fog",
-                     "sovereignty", "process locally", "sync later", "latency"],
+        "markers": _i18n(["edge", "local-first", "on-device", "edge compute", "fog",
+                          "sovereignty", "process locally", "sync later", "latency"]),
         "weight": 12,
     },
     "physical_ai": {
         "name": "Physical AI / Embodied Intelligence",
         "horizon": "3yr",
         "horizon_desc": "2028-2030: AI moves from digital to physical world (robotics, spatial computing, digital twins).",
-        "markers": ["physical", "spatial", "3d reconstruction", "gaussian splat",
-                     "digital twin", "drone", "uav", "sensor", "lidar", "photogrammetry",
-                     "embodied", "real-world"],
+        "markers": _i18n(["physical", "spatial", "3d reconstruction", "gaussian splat",
+                          "digital twin", "drone", "uav", "sensor", "lidar", "photogrammetry",
+                          "embodied", "real-world"]),
         "weight": 15,
     },
     "small_models_lqm": {
         "name": "Small/Local Models + LQMs",
         "horizon": "3yr",
         "horizon_desc": "2028-2030: Edge-deployable models replace cloud LLMs. Physics-based LQMs outperform statistical models.",
-        "markers": ["local model", "small model", "quantitative model", "physics-based",
-                     "mechanistic", "simulation", "ray tracing", "not statistical",
-                     "physics, not statistics"],
+        "markers": _i18n(["local model", "small model", "quantitative model", "physics-based",
+                          "mechanistic", "simulation", "ray tracing", "not statistical",
+                          "physics, not statistics"]),
         "weight": 10,
     },
     "hpc_quantum": {
         "name": "HPC + Quantum Enablement",
         "horizon": "3yr",
         "horizon_desc": "2029-2032: Quantum-classical hybrid pipelines for simulation. GPU clusters for 3D reconstruction.",
-        "markers": ["hpc", "quantum", "gpu", "parallel", "compute cluster",
-                     "high-performance", "accelerat"],
+        "markers": _i18n(["hpc", "quantum", "gpu", "parallel", "compute cluster",
+                          "high-performance", "accelerat"]),
         "weight": 5,
     },
     "agentic_ai": {
         "name": "AI Agentic Stacks",
         "horizon": "3yr",
         "horizon_desc": "2027-2029: Autonomous AI agents orchestrate multi-step workflows. Human-on-the-loop replaces human-in-the-loop.",
-        "markers": ["agent", "autonomous", "orchestrat", "pipeline", "automated",
-                     "workflow", "multi-step", "self-improving", "feedback loop"],
+        "markers": _i18n(["agent", "autonomous", "orchestrat", "pipeline", "automated",
+                          "workflow", "multi-step", "self-improving", "feedback loop"]),
         "weight": 10,
     },
     "harvest_now_decrypt_later": {
         "name": "Post-Quantum / HNDL Protection",
         "horizon": "3yr",
         "horizon_desc": "2028-2030: HNDL attacks make current encryption vulnerable. Post-quantum crypto becomes mandatory.",
-        "markers": ["quantum-secure", "post-quantum", "harvest now decrypt later",
-                     "pqc", "kyber", "dilithium", "lattice-based"],
+        "markers": _i18n(["quantum-secure", "post-quantum", "harvest now decrypt later",
+                          "pqc", "kyber", "dilithium", "lattice-based"]),
         "weight": 5,
     },
     "explainable_ai": {
         "name": "Explainable + Understandable AI",
         "horizon": "3yr",
         "horizon_desc": "2027-2029: EU AI Act enforces explainability. Black-box models face regulatory barriers.",
-        "markers": ["explainable", "interpretable", "transparent", "understandable",
-                     "audit trail", "physics-based", "not black box", "white box",
-                     "mechanistic", "causal"],
+        "markers": _i18n(["explainable", "interpretable", "transparent", "understandable",
+                          "audit trail", "physics-based", "not black box", "white box",
+                          "mechanistic", "causal"]),
         "weight": 10,
     },
     "actor_network": {
         "name": "Actor-Network / Sociotechnical",
         "horizon": "3yr",
         "horizon_desc": "2027-2030: Systems thinking replaces reductionism. ANT gains traction in EU policy.",
-        "markers": ["actor-network", "sociotechnical", "stakeholder", "ecosystem",
-                     "boundary object", "translation", "network effect",
-                     "interdisciplinary", "cross-disciplinary"],
+        "markers": _i18n(["actor-network", "sociotechnical", "stakeholder", "ecosystem",
+                          "boundary object", "translation", "network effect",
+                          "interdisciplinary", "cross-disciplinary"]),
         "weight": 8,
     },
     "secure_resilient": {
         "name": "Security + Resilience by Design",
         "horizon": "3yr",
         "horizon_desc": "2027-2029: Zero-trust and resilience become architectural requirements, not add-ons.",
-        "markers": ["security", "resilience", "gdpr", "privacy", "differential privacy",
-                     "zero-trust", "supply chain", "contested", "post-conflict",
-                     "threat model", "attack surface"],
+        "markers": _i18n(["security", "resilience", "gdpr", "privacy", "differential privacy",
+                          "zero-trust", "supply chain", "contested", "post-conflict",
+                          "threat model", "attack surface"]),
         "weight": 8,
     },
     "open_sovereign": {
         "name": "Open + Sovereign Infrastructure",
         "horizon": "3yr",
         "horizon_desc": "2028-2030: EU digital sovereignty mandates open standards, open source, data sovereignty.",
-        "markers": ["open source", "open-source", "open data", "sovereign",
-                     "apache", "cc-by", "fair", "interoperable", "no lock-in",
-                     "modular", "swappable"],
+        "markers": _i18n(["open source", "open-source", "open data", "sovereign",
+                          "apache", "cc-by", "fair", "interoperable", "no lock-in",
+                          "modular", "swappable"]),
         "weight": 10,
     },
     "spatial_web": {
         "name": "Spatial Web / Web 4.0",
         "horizon": "3yr",
         "horizon_desc": "2028-2032: Physical and digital worlds merge. Spatial indexing becomes infrastructure like DNS.",
-        "markers": ["spatial", "3d", "gaussian", "mesh", "point cloud",
-                     "citygml", "ifc", "ogc", "geospatial", "bim", "gis",
-                     "spatial computing", "spatial index"],
+        "markers": _i18n(["spatial", "3d", "gaussian", "mesh", "point cloud",
+                          "citygml", "ifc", "ogc", "geospatial", "bim", "gis",
+                          "spatial computing", "spatial index"]),
         "weight": 12,
     },
     "drone_uam": {
         "name": "Drone Economy + UAM",
         "horizon": "3yr",
         "horizon_desc": "2028-2030: BVLOS drone operations become routine. UAM moves from prototype to infrastructure.",
-        "markers": ["drone", "uav", "bvlos", "urban air mobility", "uam",
-                     "u-space", "altitude", "corridor", "autonomous flight",
-                     "easa"],
+        "markers": _i18n(["drone", "uav", "bvlos", "urban air mobility", "uam",
+                          "u-space", "altitude", "corridor", "autonomous flight",
+                          "easa"]),
         "weight": 8,
     },
     # --- 5-YEAR HORIZON (2031) ---
@@ -467,35 +1142,35 @@ FUTURE_TECH_RADAR = {
         "name": "Federated Digital Twins",
         "horizon": "5yr",
         "horizon_desc": "2030-2032: Digital twins stop being siloed. Federated twin networks share state across organizations and borders.",
-        "markers": ["federated", "interoperable", "cross-organization",
-                     "shared state", "digital twin", "citygml", "ifc",
-                     "common data environment", "linked data"],
+        "markers": _i18n(["federated", "interoperable", "cross-organization",
+                          "shared state", "digital twin", "citygml", "ifc",
+                          "common data environment", "linked data"]),
         "weight": 8,
     },
     "synthetic_data_generation": {
         "name": "Synthetic Data + Generative Worlds",
         "horizon": "5yr",
         "horizon_desc": "2030-2032: Synthetic environments replace real data collection for training. World models generate training scenarios.",
-        "markers": ["synthetic", "generated", "world model", "simulation",
-                     "augmented", "generative", "procedural"],
+        "markers": _i18n(["synthetic", "generated", "world model", "simulation",
+                          "augmented", "generative", "procedural"]),
         "weight": 6,
     },
     "autonomous_infrastructure": {
         "name": "Autonomous Infrastructure Management",
         "horizon": "5yr",
         "horizon_desc": "2030-2032: Infrastructure self-monitors, self-repairs, self-optimizes. Human operators become exception handlers.",
-        "markers": ["autonomous", "self-improving", "self-monitoring",
-                     "predictive maintenance", "continuous", "prescriptive",
-                     "automated decision"],
+        "markers": _i18n(["autonomous", "self-improving", "self-monitoring",
+                          "predictive maintenance", "continuous", "prescriptive",
+                          "automated decision"]),
         "weight": 7,
     },
     "regulation_as_code": {
         "name": "Regulation-as-Code / Machine-Readable Policy",
         "horizon": "5yr",
         "horizon_desc": "2030-2032: EU regulations become machine-executable. Compliance is automated, not manual.",
-        "markers": ["compliance", "regulatory", "easa", "gdpr", "ai act",
-                     "regulation", "automated compliance", "audit trail",
-                     "machine-readable"],
+        "markers": _i18n(["compliance", "regulatory", "easa", "gdpr", "ai act",
+                          "regulation", "automated compliance", "audit trail",
+                          "machine-readable"]),
         "weight": 5,
     },
     # --- 10-YEAR HORIZON (2036) ---
@@ -503,41 +1178,41 @@ FUTURE_TECH_RADAR = {
         "name": "Ambient Intelligence / Invisible Computing",
         "horizon": "10yr",
         "horizon_desc": "2033-2036: Computing disappears into the environment. Spatial computing becomes as invisible as WiFi.",
-        "markers": ["ambient", "invisible", "ubiquitous", "pervasive",
-                     "spatial computing", "environmental intelligence",
-                     "context-aware"],
+        "markers": _i18n(["ambient", "invisible", "ubiquitous", "pervasive",
+                          "spatial computing", "environmental intelligence",
+                          "context-aware"]),
         "weight": 4,
     },
     "biological_digital_convergence": {
         "name": "Biological-Digital Convergence",
         "horizon": "10yr",
         "horizon_desc": "2033-2036: Digital twins merge with biological systems. Material science meets synthetic biology.",
-        "markers": ["biological", "bio-digital", "material composition",
-                     "dielectric", "material properties", "environmental sensing",
-                     "living material"],
+        "markers": _i18n(["biological", "bio-digital", "material composition",
+                          "dielectric", "material properties", "environmental sensing",
+                          "living material"]),
         "weight": 4,
     },
     "planetary_digital_twin": {
         "name": "Planetary-Scale Digital Twin",
         "horizon": "10yr",
         "horizon_desc": "2033-2036: City-scale twins merge into national, then planetary infrastructure. The spatial index BECOMES the map.",
-        "markers": ["planetary", "global", "city-scale", "country-scale",
-                     "infrastructure", "persistent", "universal",
-                     "queryable", "spatial index"],
+        "markers": _i18n(["planetary", "global", "city-scale", "country-scale",
+                          "infrastructure", "persistent", "universal",
+                          "queryable", "spatial index"]),
         "weight": 5,
     },
     "post_quantum_native": {
         "name": "Post-Quantum Native Architecture",
         "horizon": "10yr",
         "horizon_desc": "2033-2036: Quantum computers break current encryption. All data collected today is vulnerable. Systems must be quantum-native.",
-        "markers": ["quantum", "post-quantum", "quantum-secure",
-                     "lattice", "homomorphic", "future-proof encryption"],
+        "markers": _i18n(["quantum", "post-quantum", "quantum-secure",
+                          "lattice", "homomorphic", "future-proof encryption"]),
         "weight": 3,
     },
 }
 
 
-def score_future_tech_radar(model) -> dict:
+def score_future_tech_radar(model, doc_scale: str = "standard") -> dict:
     """Score proposal against the Future Tech Radar (2029 landscape)."""
     text = model.full_text.lower() if model.full_text else ""
     scores = {}
@@ -545,8 +1220,7 @@ def score_future_tech_radar(model) -> dict:
     for dim_key, dim in FUTURE_TECH_RADAR.items():
         found = sum(1 for m in dim["markers"] if m in text)
         total = len(dim["markers"])
-        raw_pct = (found / total * 100) if total > 0 else 0
-        score = round(max(1.0, min(5.0, 1.0 + raw_pct * 0.04)), 1)
+        score = _score_markers(found, total, doc_scale)
         scores[dim_key] = {
             "name": dim["name"],
             "score": score,
@@ -612,94 +1286,94 @@ def format_future_tech_radar(scores: dict) -> list:
 
 
 # ============================================================
-# PESTLE+D — Regional Environment Analysis (8 dimensions)
+# PESTELED — Regional Environment Analysis (8 dimensions)
+# Political, Environmental, Social, Technological, Economic, Legal, Ethical, Demographic
 # ============================================================
 
-PESTLED_DIMENSIONS = {
+PESTELED_DIMENSIONS = {
     "political": {
         "name": "Political",
         "description": "Government policy, regulation, political stability, trade relations",
-        "markers": ["government", "policy", "regulation", "ministry", "public sector",
-                     "eu commission", "european commission", "national", "bilateral",
-                     "geopolitic", "sovereignty", "political", "governance", "treaty",
-                     "sanctions", "diplomacy", "nato", "defence", "security policy"],
-        "weight": 15,
-    },
-    "economic": {
-        "name": "Economic",
-        "description": "Market conditions, funding, economic cycles, cost-benefit",
-        "markers": ["market", "revenue", "cost", "investment", "economic", "gdp",
-                     "funding", "budget", "commercial", "pricing", "saas", "licensing",
-                     "billion", "trillion", "growth", "recession", "inflation",
-                     "supply chain", "trade", "export"],
-        "weight": 15,
-    },
-    "social": {
-        "name": "Social",
-        "description": "Workforce, public sentiment, cultural shifts, community impact",
-        "markers": ["community", "stakeholder", "citizen", "workforce", "public",
-                     "social", "inclusion", "diversity", "engagement", "co-creation",
-                     "humanitarian", "refugee", "displacement", "wellbeing",
-                     "education", "training", "skill", "user", "adoption"],
-        "weight": 10,
-    },
-    "technological": {
-        "name": "Technological",
-        "description": "Tech maturity, infrastructure, digital transformation",
-        "markers": ["ai", "machine learning", "deep learning", "5g", "6g", "cloud",
-                     "edge", "iot", "sensor", "drone", "uav", "digital twin",
-                     "open source", "api", "platform", "standard", "interoperable",
-                     "autonomous", "automation", "quantum", "hpc", "gpu"],
+        "markers": _i18n(["government", "policy", "regulation", "ministry", "public sector",
+                          "eu commission", "european commission", "national", "bilateral",
+                          "geopolitic", "sovereignty", "political", "governance", "treaty",
+                          "sanctions", "diplomacy", "nato", "defence", "security policy"]),
         "weight": 15,
     },
     "environmental": {
         "name": "Environmental",
         "description": "Sustainability, green deal, carbon footprint, ESG",
-        "markers": ["green deal", "sustainability", "carbon", "energy", "circular",
-                     "climate", "environmental", "emission", "renewable", "waste",
-                     "biodiversity", "esg", "life cycle", "footprint",
-                     "resource efficient", "nature-based"],
+        "markers": _i18n(["green deal", "sustainability", "carbon", "energy", "circular",
+                          "climate", "environmental", "emission", "renewable", "waste",
+                          "biodiversity", "esg", "life cycle", "footprint",
+                          "resource efficient", "nature-based"]),
         "weight": 10,
+    },
+    "social": {
+        "name": "Social",
+        "description": "Workforce, public sentiment, cultural shifts, community impact",
+        "markers": _i18n(["community", "stakeholder", "citizen", "workforce", "public",
+                          "social", "inclusion", "diversity", "engagement", "co-creation",
+                          "humanitarian", "refugee", "displacement", "wellbeing",
+                          "education", "training", "skill", "user", "adoption"]),
+        "weight": 10,
+    },
+    "technological": {
+        "name": "Technological",
+        "description": "Tech maturity, infrastructure, digital transformation",
+        "markers": _i18n(["ai", "machine learning", "deep learning", "5g", "6g", "cloud",
+                          "edge", "iot", "sensor", "drone", "uav", "digital twin",
+                          "open source", "api", "platform", "standard", "interoperable",
+                          "autonomous", "automation", "quantum", "hpc", "gpu"]),
+        "weight": 15,
+    },
+    "economic": {
+        "name": "Economic",
+        "description": "Market conditions, funding, economic cycles, cost-benefit",
+        "markers": _i18n(["market", "revenue", "cost", "investment", "economic", "gdp",
+                          "funding", "budget", "commercial", "pricing", "saas", "licensing",
+                          "billion", "trillion", "growth", "recession", "inflation",
+                          "supply chain", "trade", "export"]),
+        "weight": 15,
     },
     "legal": {
         "name": "Legal",
         "description": "IP law, data protection, compliance, regulatory frameworks",
-        "markers": ["gdpr", "regulation", "compliance", "ip", "intellectual property",
-                     "patent", "license", "apache", "cc-by", "mit", "legal",
-                     "liability", "contract", "easa", "eu regulation",
-                     "data protection", "privacy", "consent", "ethical review"],
+        "markers": _i18n(["gdpr", "regulation", "compliance", "ip", "intellectual property",
+                          "patent", "license", "apache", "cc-by", "mit", "legal",
+                          "liability", "contract", "easa", "eu regulation",
+                          "data protection", "privacy", "consent", "ethical review"]),
         "weight": 10,
     },
     "ethical": {
         "name": "Ethical",
         "description": "AI ethics, bias, responsible innovation, transparency",
-        "markers": ["ethical", "ethics", "responsible", "bias", "fairness",
-                     "transparency", "explainable", "accountab", "trust",
-                     "dual-use", "human rights", "dignity", "consent",
-                     "proportional", "non-discrimination", "audit"],
+        "markers": _i18n(["ethical", "ethics", "responsible", "bias", "fairness",
+                          "transparency", "explainable", "accountab", "trust",
+                          "dual-use", "human rights", "dignity", "consent",
+                          "proportional", "non-discrimination", "audit"]),
         "weight": 10,
     },
     "demographic": {
         "name": "Demographic",
         "description": "Population trends, user demographics, workforce shifts",
-        "markers": ["population", "urban", "rural", "aging", "migration",
-                     "displacement", "reconstruction", "city", "municipality",
-                     "region", "cross-border", "local", "global",
-                     "developing", "emerging market", "infrastructure gap"],
+        "markers": _i18n(["population", "urban", "rural", "aging", "migration",
+                          "displacement", "reconstruction", "city", "municipality",
+                          "region", "cross-border", "local", "global",
+                          "developing", "emerging market", "infrastructure gap"]),
         "weight": 15,
     },
 }
 
 
-def score_pestled(model) -> dict:
-    """Score proposal against PESTLE+D regional environment dimensions."""
+def score_pesteled(model, doc_scale: str = "standard") -> dict:
+    """Score proposal against PESTELED regional environment dimensions."""
     text = model.full_text.lower() if model.full_text else ""
     scores = {}
-    for dim_key, dim in PESTLED_DIMENSIONS.items():
+    for dim_key, dim in PESTELED_DIMENSIONS.items():
         found = sum(1 for m in dim["markers"] if m in text)
         total = len(dim["markers"])
-        raw_pct = (found / total * 100) if total > 0 else 0
-        score = round(max(1.0, min(5.0, 1.0 + raw_pct * 0.04)), 1)
+        score = _score_markers(found, total, doc_scale)
         scores[dim_key] = {
             "name": dim["name"], "description": dim["description"],
             "score": score, "found": found, "total": total, "weight": dim["weight"],
@@ -715,23 +1389,31 @@ def score_pestled(model) -> dict:
     return scores
 
 
-def format_pestled(scores: dict) -> list:
-    """Format PESTLE+D analysis as report lines."""
+# Backwards-compatible alias
+score_pestled = score_pesteled
+
+
+def format_pesteled(scores: dict) -> list:
+    """Format PESTELED analysis as report lines."""
     lines = []
-    lines.append("  PESTLE+D REGIONAL ENVIRONMENT ANALYSIS")
+    lines.append("  PESTELED REGIONAL ENVIRONMENT ANALYSIS")
+    lines.append("  (Political · Environmental · Social · Technological · Economic · Legal · Ethical · Demographic)")
     lines.append("  " + "-" * 72)
     lines.append("  Does the proposal understand its operating environment?")
     lines.append("")
-    for key, dim in sorted(
-        [(k, v) for k, v in scores.items() if not k.startswith("_")],
-        key=lambda x: x[1]["weight"], reverse=True
-    ):
+    # Display in canonical PESTELED order
+    _order = ["political", "environmental", "social", "technological",
+              "economic", "legal", "ethical", "demographic"]
+    for key in _order:
+        if key not in scores:
+            continue
+        dim = scores[key]
         filled = int((dim["score"] - 1.0) / 4.0 * 16)
         bar = "#" * filled + "." * (16 - filled)
         lines.append(f"  {dim['name']:<16} {dim['score']}/5.0  [{bar}]  "
                       f"({dim['found']}/{dim['total']}, w={dim['weight']}%)")
     lines.append("")
-    lines.append(f"  PESTLE+D WEIGHTED AVG:  {scores['_weighted_avg']:.2f} / 5.00  "
+    lines.append(f"  PESTELED WEIGHTED AVG:  {scores['_weighted_avg']:.2f} / 5.00  "
                   f"[{scores['_coverage']}]")
     weakest = min(
         [(k, v) for k, v in scores.items() if not k.startswith("_")],
@@ -740,6 +1422,10 @@ def format_pestled(scores: dict) -> list:
     lines.append(f"  Weakest: {weakest[1]['name']} ({weakest[1]['score']}/5.0)")
     lines.append("")
     return lines
+
+
+# Backwards-compatible alias
+format_pestled = format_pesteled
 
 
 # ============================================================
@@ -754,7 +1440,7 @@ EU_INTEROP_LAYERS = {
                      "docker", "kubernetes", "microservice", "cloud", "edge",
                      "deployment", "infrastructure", "server", "endpoint",
                      "bandwidth", "latency", "throughput"],
-        "weight": 15,
+        "weight": 13,
     },
     "syntactic": {
         "name": "Syntactic Interoperability",
@@ -763,65 +1449,73 @@ EU_INTEROP_LAYERS = {
                      "protobuf", "parquet", "schema", "format", "encoding",
                      "serializ", "data model", "data structure", "binary",
                      "ascii", "utf"],
-        "weight": 15,
+        "weight": 13,
     },
     "semantic": {
         "name": "Semantic Interoperability",
         "description": "Shared meaning, ontologies, taxonomies, linked data",
-        "markers": ["ontology", "taxonomy", "semantic", "linked data", "rdf",
+        "markers": _i18n(["ontology", "taxonomy", "semantic", "linked data", "rdf",
                      "knowledge graph", "vocabulary", "terminology", "meaning",
                      "classification", "category", "itu-r", "3gpp", "iso",
-                     "standardiz", "harmoniz", "mapping", "crosswalk"],
-        "weight": 20,
+                     "standardiz", "harmoniz", "mapping", "crosswalk"]),
+        "weight": 17,
     },
     "organizational": {
         "name": "Organizational Interop",
         "description": "Governance, processes, roles, cross-org coordination",
-        "markers": ["governance", "consortium", "partner", "coordinator",
+        "markers": _i18n(["governance", "consortium", "partner", "coordinator",
                      "work package", "steering", "advisory", "board",
                      "process", "workflow", "role", "responsibility",
-                     "agreement", "mou", "contract", "sla"],
-        "weight": 10,
+                     "agreement", "mou", "contract", "sla"]),
+        "weight": 9,
     },
     "legal": {
         "name": "Legal Interoperability",
         "description": "Licensing, IP, data rights, regulatory compliance",
-        "markers": ["license", "apache", "cc-by", "mit", "open source",
+        "markers": _i18n(["license", "apache", "cc-by", "mit", "open source",
                      "gdpr", "regulation", "compliance", "ip", "patent",
                      "data protection", "privacy", "consent", "legal",
-                     "liability", "easa", "eu regulation"],
-        "weight": 15,
+                     "liability", "easa", "eu regulation"]),
+        "weight": 13,
     },
     "contextual": {
         "name": "Contextual Interoperability",
         "description": "Domain-specific context, use-case awareness, situational fit",
-        "markers": ["use case", "scenario", "context", "domain", "vertical",
+        "markers": _i18n(["use case", "scenario", "context", "domain", "vertical",
                      "telecom", "urban", "reconstruction", "disaster",
                      "mobility", "defence", "construction", "planning",
-                     "mission", "operational", "field", "deployment"],
-        "weight": 15,
+                     "mission", "operational", "field", "deployment"]),
+        "weight": 13,
     },
     "social": {
         "name": "Social Interoperability",
         "description": "Trust, adoption, community, stakeholder buy-in",
-        "markers": ["trust", "adoption", "community", "stakeholder", "user",
+        "markers": _i18n(["trust", "adoption", "community", "stakeholder", "user",
                      "engagement", "co-creation", "feedback", "training",
                      "capacity building", "hackathon", "workshop", "outreach",
-                     "dissemination", "accessibility", "inclusion"],
-        "weight": 10,
+                     "dissemination", "accessibility", "inclusion"]),
+        "weight": 7,
+    },
+    "security": {
+        "name": "Security Interoperability",
+        "description": "Access control, clearance levels, war-time information access, quantum-safe, resilience",
+        "markers": _i18n(["security", "clearance", "access control", "encryption", "quantum-safe",
+                     "kyber", "ml-kem", "classified", "confidential", "resilience",
+                     "war-time", "cyber", "threat", "vulnerability", "zero trust",
+                     "authentication", "authorization", "audit"]),
+        "weight": 15,
     },
 }
 
 
-def score_eu_interop(model) -> dict:
+def score_eu_interop(model, doc_scale: str = "standard") -> dict:
     """Score proposal against EU Interoperability Framework layers."""
     text = model.full_text.lower() if model.full_text else ""
     scores = {}
     for layer_key, layer in EU_INTEROP_LAYERS.items():
         found = sum(1 for m in layer["markers"] if m in text)
         total = len(layer["markers"])
-        raw_pct = (found / total * 100) if total > 0 else 0
-        score = round(max(1.0, min(5.0, 1.0 + raw_pct * 0.04)), 1)
+        score = _score_markers(found, total, doc_scale)
         scores[layer_key] = {
             "name": layer["name"], "description": layer["description"],
             "score": score, "found": found, "total": total, "weight": layer["weight"],
@@ -840,7 +1534,7 @@ def score_eu_interop(model) -> dict:
 def format_eu_interop(scores: dict) -> list:
     """Format EU Interoperability Framework as report lines."""
     lines = []
-    lines.append("  EU INTEROPERABILITY FRAMEWORK (7-layer assessment)")
+    lines.append("  EU INTEROPERABILITY FRAMEWORK (8-layer assessment)")
     lines.append("  " + "-" * 72)
     lines.append("  Will this proposal's outputs plug into EU infrastructure?")
     lines.append("")
@@ -873,29 +1567,29 @@ STRESS_TEST = {
         "name": "CONCEPT \u2014 Does the core idea hold?",
         "checks": [
             {"id": "C1", "question": "Is the core thesis falsifiable?",
-             "positive": ["proof of principle", "hypothesis", "falsifiable", "validate",
-                          "benchmark", "measurable", "quantif", "threshold", "kpi"],
+             "positive": _i18n(["proof of principle", "hypothesis", "falsifiable", "validate",
+                          "benchmark", "measurable", "quantif", "threshold", "kpi"]),
              "negative": ["will revolutionize", "paradigm shift", "game-changing", "unprecedented"],
              "weight": 20},
             {"id": "C2", "question": "Does it solve a problem people actually have?",
-             "positive": ["bottleneck", "cost", "person-hours", "manual", "time-consuming",
-                          "gap", "unmet need", "pain point", "customer", "user need", "operator"],
+             "positive": _i18n(["bottleneck", "cost", "person-hours", "manual", "time-consuming",
+                          "gap", "unmet need", "pain point", "customer", "user need", "operator"]),
              "negative": ["solution looking for", "theoretically"],
              "weight": 20},
             {"id": "C3", "question": "Is there evidence it CAN work (not just should)?",
-             "positive": ["demonstrated", "preliminary", "pilot", "prototype", "testbed",
-                          "validated", "feasibility", "proof", "existing pipeline", "pre-publication"],
+             "positive": _i18n(["demonstrated", "preliminary", "pilot", "prototype", "testbed",
+                          "validated", "feasibility", "proof", "existing pipeline", "pre-publication"]),
              "negative": ["we believe", "we expect", "we anticipate", "we hope", "should work"],
              "weight": 20},
             {"id": "C4", "question": "What's the moat \u2014 why can't someone copy this?",
-             "positive": ["network effect", "accumulating", "first-mover", "benchmark dataset",
+             "positive": _i18n(["network effect", "accumulating", "first-mover", "benchmark dataset",
                           "standards contribution", "open-source", "ecosystem", "compounding",
-                          "cross-validated", "persistent"],
+                          "cross-validated", "persistent"]),
              "negative": ["proprietary advantage", "secret sauce"],
              "weight": 15},
             {"id": "C5", "question": "Is the team the RIGHT team for this problem?",
-             "positive": ["track record", "prior project", "key personnel", "published",
-                          "deployed", "operator", "200+", "experience", "expertise", "cv"],
+             "positive": _i18n(["track record", "prior project", "key personnel", "published",
+                          "deployed", "operator", "200+", "experience", "expertise", "cv"]),
              "negative": ["to be hired", "to be recruited", "tbd"],
              "weight": 25},
         ],
@@ -904,29 +1598,31 @@ STRESS_TEST = {
         "name": "CONTEXT \u2014 Does it fit the current environment?",
         "checks": [
             {"id": "X1", "question": "Is the timing right? (convergence)",
-             "positive": ["why now", "converging", "for the first time", "recently",
-                          "2023", "2024", "2025", "emerging", "newly available", "matured"],
+             "positive": _i18n(["why now", "converging", "for the first time", "recently",
+                          "2023", "2024", "2025", "2026", "emerging", "newly available", "matured"]),
              "negative": ["long established", "decades of research"],
              "weight": 20},
-            {"id": "X2", "question": "Does it align with EU strategic priorities?",
-             "positive": ["green deal", "digital decade", "eu regulation", "horizon europe",
+            {"id": "X2", "question": "Does it align with EU/national strategic priorities?",
+             "positive": _i18n(["green deal", "digital decade", "eu regulation", "horizon europe",
                           "eic", "sovereignty", "strategic autonomy", "open science", "fair",
-                          "ukraine", "reconstruction", "eu facility"],
+                          "ukraine", "reconstruction", "eu facility",
+                          "vinnova", "totalförsvar", "beredskap", "försvarsindustri"]),
              "negative": [],
              "weight": 20},
             {"id": "X3", "question": "Is the regulatory environment ready?",
-             "positive": ["easa", "u-space", "gdpr", "eu regulation", "ai act", "data act",
-                          "standards body", "3gpp", "etsi", "ogc", "iso", "regulatory framework"],
+             "positive": _i18n(["easa", "u-space", "gdpr", "eu regulation", "ai act", "data act",
+                          "standards body", "3gpp", "etsi", "ogc", "iso", "regulatory framework"]),
              "negative": ["regulatory uncertainty", "unclear legal"],
              "weight": 15},
             {"id": "X4", "question": "Is there real market pull (not just push)?",
-             "positive": ["customer", "operator", "letter of intent", "captive", "first customer",
-                          "demand", "bottleneck", "willingness to pay", "budget", "procurement"],
+             "positive": _i18n(["customer", "operator", "letter of intent", "captive", "first customer",
+                          "demand", "bottleneck", "willingness to pay", "budget", "procurement"]),
              "negative": ["if adopted", "potential market"],
              "weight": 20},
             {"id": "X5", "question": "Does consortium map to problem geography?",
-             "positive": ["uk", "sweden", "ukraine", "cambridge", "kharkiv", "municipality",
-                          "field deployment", "local partner", "ground truth", "community"],
+             "positive": _i18n(["uk", "sweden", "ukraine", "cambridge", "kharkiv", "municipality",
+                          "field deployment", "local partner", "ground truth", "community",
+                          "lidköping", "göteborg", "stockholm"]),
              "negative": ["remote monitoring", "desk study"],
              "weight": 25},
         ],
@@ -935,28 +1631,28 @@ STRESS_TEST = {
         "name": "CRISIS \u2014 What happens when things go wrong?",
         "checks": [
             {"id": "R1", "question": "What if the primary approach fails?",
-             "positive": ["fallback", "alternative", "contingency", "plan b", "mitigation",
-                          "risk", "failure mode", "degraded", "partial success", "pivot"],
+             "positive": _i18n(["fallback", "alternative", "contingency", "plan b", "mitigation",
+                          "risk", "failure mode", "degraded", "partial success", "pivot"]),
              "negative": ["no alternative", "critical dependency"],
              "weight": 25},
             {"id": "R2", "question": "What if a key partner drops out?",
-             "positive": ["deputy", "named deputy", "backup", "redundancy", "modular",
-                          "replaceable", "distributed", "no single point", "key person risk"],
+             "positive": _i18n(["deputy", "named deputy", "backup", "redundancy", "modular",
+                          "replaceable", "distributed", "no single point", "key person risk"]),
              "negative": ["entirely depends on", "sole provider"],
              "weight": 20},
             {"id": "R3", "question": "What if the geopolitical context changes?",
-             "positive": ["dual-site", "controlled baseline", "cambridge", "alternative site",
-                          "conflict", "contested", "airspace restriction", "ground-based", "fallback"],
+             "positive": _i18n(["dual-site", "controlled baseline", "cambridge", "alternative site",
+                          "conflict", "contested", "airspace restriction", "ground-based", "fallback"]),
              "negative": ["assumes stability", "assumes access"],
              "weight": 20},
             {"id": "R4", "question": "What if a competitor publishes first?",
-             "positive": ["open-source", "benchmark dataset", "standards", "community",
-                          "network effect", "accumulating", "infrastructure", "not application", "open data"],
+             "positive": _i18n(["open-source", "benchmark dataset", "standards", "community",
+                          "network effect", "accumulating", "infrastructure", "not application", "open data"]),
              "negative": ["proprietary", "first-to-patent"],
              "weight": 15},
             {"id": "R5", "question": "What if funding is cut or delayed?",
-             "positive": ["phase", "gate", "milestone", "self-fund", "commercial", "revenue",
-                          "phased", "modular", "incremental", "minimum viable"],
+             "positive": _i18n(["phase", "gate", "milestone", "self-fund", "commercial", "revenue",
+                          "phased", "modular", "incremental", "minimum viable"]),
              "negative": ["requires full funding", "all-or-nothing"],
              "weight": 20},
         ],
@@ -1546,88 +2242,88 @@ SMILE_PHASES = {
     "reality_emulation": {
         "name": "Reality Emulation",
         "key_question": "What is the starting point and boundary of your sociotechnological ecosystem?",
-        "proposal_markers": [
+        "proposal_markers": _i18n([
             "stakeholder mapping", "stakeholder analysis", "ecosystem boundary",
             "spatial context", "temporal context", "reality canvas",
             "operating context", "sociotechnological", "actor-network",
             "pesteled", "pestle", "5 whys", "root cause",
-        ],
-        "structural_checks": [
+        ]),
+        "structural_checks": _i18n([
             "stakeholder table", "stakeholder matrix",
             "spatial scope", "temporal scope",
             "system boundary", "context diagram",
-        ],
+        ]),
         "what_to_check": "Does the proposal define the reality it operates in? Stakeholders, boundaries, spatial-temporal context?",
     },
     "concurrent_engineering": {
         "name": "Concurrent Engineering",
         "key_question": "What does the Minimal Viable Twin look like?",
-        "proposal_markers": [
+        "proposal_markers": _i18n([
             "minimal viable", "mvp", "mvt", "as-is", "to-be",
             "hypothesis", "validate", "simulation", "scenario",
             "virtual first", "prototype", "proof of concept",
-        ],
-        "structural_checks": [
+        ]),
+        "structural_checks": _i18n([
             "validation methodology", "test plan", "acceptance criteria",
             "verification and validation", "proof of concept",
-        ],
+        ]),
         "what_to_check": "Does the proposal define what 'good enough' looks like before scaling? Is there a validation step?",
     },
     "collective_intelligence": {
         "name": "Collective Intelligence",
         "key_question": "How does the system connect to physical reality and meet initial KPIs?",
-        "proposal_markers": [
+        "proposal_markers": _i18n([
             "sensor", "ontology", "kpi", "interoperability",
             "data model", "schema", "metadata", "standards",
             "integration", "connected", "iot",
-        ],
-        "structural_checks": [
+        ]),
+        "structural_checks": _i18n([
             "iso ", "iec ", "ieee ", "w3c", "oasis", "etsi",
             "ifc", "owl", "rdf", "json-ld", "saref",
-        ],
+        ]),
         "what_to_check": "Are specific standards/ontologies NAMED (not just mentioned)?",
     },
     "contextual_intelligence": {
         "name": "Contextual Intelligence",
         "key_question": "Can the system make real-time decisions with context?",
-        "proposal_markers": [
+        "proposal_markers": _i18n([
             "real-time", "command and control", "predictive",
             "analytics", "root cause", "decision support",
             "dashboard", "monitoring", "alert",
-        ],
-        "structural_checks": [
+        ]),
+        "structural_checks": _i18n([
             "decision support system", "dashboard specification",
             "alert threshold", "notification", "report format",
-        ],
+        ]),
         "what_to_check": "Are specific decision support outputs defined (not just 'a dashboard')?",
     },
     "continuous_intelligence": {
         "name": "Continuous Intelligence",
         "key_question": "Does the system learn and prescribe, not just predict?",
-        "proposal_markers": [
+        "proposal_markers": _i18n([
             "prescriptive", "ai-driven", "prognostic",
             "machine learning", "model training", "feedback loop",
             "continuous", "autonomous", "self-improving",
-        ],
-        "structural_checks": [
+        ]),
+        "structural_checks": _i18n([
             "ai maturity", "model update", "retraining",
             "mlops", "drift detection", "model versioning",
-        ],
+        ]),
         "what_to_check": "Is there an AI maturity path described (not just 'we will use ML')?",
     },
     "perpetual_wisdom": {
         "name": "Perpetual Wisdom",
         "key_question": "How does impact scale beyond the project?",
-        "proposal_markers": [
+        "proposal_markers": _i18n([
             "open source", "ecosystem", "replication",
             "transferability", "sustainability", "circular",
             "planetary", "global", "share impact",
-        ],
-        "structural_checks": [
+        ]),
+        "structural_checks": _i18n([
             "open source repository", "github", "gitlab",
             "sustainability plan", "replication guide",
             "open access", "creative commons",
-        ],
+        ]),
         "what_to_check": "Is there a concrete open-source/sustainability/replication plan?",
     },
 }
@@ -1635,15 +2331,15 @@ SMILE_PHASES = {
 SMILE_PERSPECTIVES = {
     "people": {
         "name": "From People",
-        "markers": ["stakeholder", "user", "citizen", "community", "participat", "co-design", "co-creation"],
+        "markers": _i18n(["stakeholder", "user", "citizen", "community", "participat", "co-design", "co-creation"]),
     },
     "systems": {
         "name": "From Systems",
-        "markers": ["ontology", "standard", "interoperab", "metadata", "schema", "protocol", "api"],
+        "markers": _i18n(["ontology", "standard", "interoperab", "metadata", "schema", "protocol", "api"]),
     },
     "planet": {
         "name": "From Planet",
-        "markers": ["gis", "bim", "cim", "satellite", "spatial", "geospatial", "environmental", "sustainability"],
+        "markers": _i18n(["gis", "bim", "cim", "satellite", "spatial", "geospatial", "environmental", "sustainability"]),
     },
 }
 
@@ -2729,6 +3425,573 @@ def check_gender_dimension(pages: dict, result: AnalysisResult, start: int, mode
 
 
 # ============================================================
+# PRESCRIPTIVE GAP ANALYSIS — 9 evaluator-perspective checks
+# Born from real gap-fix sessions on live proposals.
+# Each detector simulates what an evaluator NEEDS to see,
+# not just what anti-patterns to avoid.
+# ============================================================
+
+# Bilingual policy/regulatory markers
+_POLICY_MARKERS_EN = [
+    'regulation', 'directive', 'act', 'legislation', 'mandate', 'policy',
+    'nato', 'eu regulation', 'national strategy', 'government', 'ministry',
+    'white paper', 'green deal', 'resilience act', 'ai act', 'nis2',
+    'critical infrastructure', 'defence', 'defense', 'national security',
+]
+_POLICY_MARKERS_SV = [
+    'förordning', 'direktiv', 'lagstiftning', 'mandat', 'politik',
+    'totalförsvar', 'beredskap', 'civilförsvar', 'försvarsberedning',
+    'säkerhetspolitik', 'tidöavtal', 'msb', 'foi', 'öb', 'riksdag',
+    'proposition', 'strategi', 'myndighet', 'försvarsbeslu',
+    'nato', 'eu-förordning', 'nis2', 'ai-förordning',
+    'kritisk infrastruktur', 'samhällsvikt', 'krisberedskap',
+]
+
+# Credential specificity signals
+_CREDENTIAL_SPECIFIC = [
+    r'\d+\s*(?:år|years?)\s*(?:erfarenhet|experience|of)',
+    r'working group\s*lead|ordförande|chair',
+    r'(?:phd|dr\.|professor|docent|forskare)',
+    r'\d{4}\s*[-–]\s*(?:\d{4}|present|pågående|nu)',
+    r'(?:certified|certifierad|licensierad)',
+    r'(?:patent|publication|publikation|peer.?review)',
+]
+_CREDENTIAL_GENERIC = [
+    r'(?:specialiserat?\s+(?:företag|f[öo]retag|company))',
+    r'(?:ledande\s+(?:aktör|leverantör|expert))',
+    r'(?:extensive|omfattande)\s+(?:experience|erfarenhet)',
+    r'(?:world.?class|world.?leading|världsledande)',
+]
+
+
+@dataclass
+class GapFinding:
+    """A prescriptive gap with fix template."""
+    gap_id: str
+    name: str
+    severity: str  # CRITICAL, HIGH, MEDIUM
+    section: str
+    description: str
+    fix_template: str
+    evaluator_impact: str
+
+
+@dataclass
+class GapAnalysisResult:
+    """Results from prescriptive gap analysis."""
+    gaps: list = field(default_factory=list)
+    score: float = 0.0
+
+    def add(self, gap_id, name, severity, section, description, fix_template, evaluator_impact):
+        self.gaps.append(GapFinding(gap_id, name, severity, section,
+                                     description, fix_template, evaluator_impact))
+
+    def to_dict(self) -> dict:
+        return {
+            "gap_count": len(self.gaps),
+            "critical": sum(1 for g in self.gaps if g.severity == "CRITICAL"),
+            "high": sum(1 for g in self.gaps if g.severity == "HIGH"),
+            "medium": sum(1 for g in self.gaps if g.severity == "MEDIUM"),
+            "score": self.score,
+            "gaps": [
+                {
+                    "id": g.gap_id, "name": g.name, "severity": g.severity,
+                    "section": g.section, "description": g.description,
+                    "fix": g.fix_template, "evaluator_impact": g.evaluator_impact,
+                }
+                for g in self.gaps
+            ],
+        }
+
+
+def check_aida_opening(pages: dict, start: int, gap_result: GapAnalysisResult, lang: str):
+    """G1: Does the opening follow AIDA — shock (AS-IS) → trigger (WHY NOW) → promise (TO-BE) → method?"""
+    first_pages_text = ""
+    for num in range(start, min(start + 3, max(pages.keys()) + 1)):
+        first_pages_text += pages.get(num, "") + "\n"
+    lower = first_pages_text.lower()
+
+    if not lower.strip():
+        return
+
+    paragraphs = [p.strip() for p in first_pages_text.split('\n') if len(p.strip()) > 50]
+    if not paragraphs:
+        return
+
+    first_para = paragraphs[0] if paragraphs else ""
+    first_lower = first_para.lower()
+
+    shock_markers = (
+        ['0%', 'ingen digital', 'saknar', 'sårbar', 'brist', 'kaos', 'manuell',
+         'personberoende', 'excel', 'huvud'] if lang == 'sv' else
+        ['0%', 'no digital', 'lacks', 'vulnerable', 'gap', 'manual',
+         'key-person dependency', 'excel', 'siloed']
+    )
+    trigger_markers = (
+        ['förändra', 'säkerhetspolitisk', 'kris', 'krig', 'beredskap', 'nu',
+         'akut', 'oacceptab', 'inte längre', 'tidöavtal'] if lang == 'sv' else
+        ['changing', 'geopolitical', 'crisis', 'war', 'urgent', 'no longer acceptable',
+         'new regulation', 'mandate', 'deadline']
+    )
+    promise_markers = (
+        [r'om \d+ månader', 'efter projekt', 'resultat', 'minska', 'öka',
+         'digitalisera', r'från.*till'] if lang == 'sv' else
+        [r'within \d+ months', 'after project', 'result', 'reduce', 'increase',
+         'digitize', r'from.*to']
+    )
+
+    has_shock = any(m in first_lower for m in shock_markers)
+    has_trigger = any(m in first_lower for m in trigger_markers)
+    has_promise = any(re.search(m, first_lower) for m in promise_markers)
+
+    aida_score = sum([has_shock, has_trigger, has_promise])
+
+    if aida_score < 2:
+        gap_result.add(
+            "G1", "Missing AIDA Opening Structure", "CRITICAL",
+            "Opening paragraph",
+            f"Opening has {aida_score}/3 AIDA elements. "
+            f"{'No shock/AS-IS. ' if not has_shock else ''}"
+            f"{'No trigger/WHY NOW. ' if not has_trigger else ''}"
+            f"{'No promise/TO-BE. ' if not has_promise else ''}",
+            "Rewrite first paragraph: [SHOCK: quantified AS-IS problem] → "
+            "[TRIGGER: external force making this urgent NOW] → "
+            "[PROMISE: quantified TO-BE after project]. "
+            "Example: '0% digital documentation today... In a changed security landscape... "
+            "After 14 months: 80% digitized.'",
+            "Evaluators form their impression in the first 30 seconds. "
+            "A tech-first or methodology-first opening loses them immediately."
+        )
+    elif aida_score == 2:
+        missing = []
+        if not has_shock:
+            missing.append("AS-IS shock stat")
+        if not has_trigger:
+            missing.append("WHY NOW trigger")
+        if not has_promise:
+            missing.append("TO-BE promise")
+        gap_result.add(
+            "G1", "Incomplete AIDA Opening", "MEDIUM",
+            "Opening paragraph",
+            f"Opening has 2/3 AIDA elements. Missing: {', '.join(missing)}.",
+            f"Add the missing element: {missing[0]}.",
+            "Good start but evaluators need all three beats to be convinced."
+        )
+
+
+def check_outside_in_anchoring(pages: dict, start: int, gap_result: GapAnalysisResult, lang: str):
+    """G3: Are external triggers named — policy, regulation, geopolitical shifts?"""
+    first_pages_text = ""
+    for num in range(start, min(start + 4, max(pages.keys()) + 1)):
+        first_pages_text += pages.get(num, "") + "\n"
+    lower = first_pages_text.lower()
+
+    markers = _POLICY_MARKERS_SV if lang == 'sv' else _POLICY_MARKERS_EN
+    found = [m for m in markers if m in lower]
+
+    if len(found) == 0:
+        gap_result.add(
+            "G3", "No Outside-In Policy Anchoring", "CRITICAL",
+            "Relevance / Problem statement",
+            "No policy, regulatory, or geopolitical triggers found in the first 4 pages. "
+            "The proposal reads as internally motivated, not responding to external forces.",
+            "Add 2-3 named policy anchors from the call's domain. "
+            "For defence: totalförsvar directives, MSB, ÖB recommendations, NATO commitments. "
+            "For climate: Green Deal, Fit-for-55, RED III. "
+            "For digital: AI Act, NIS2, Data Act, Cyber Resilience Act.",
+            "Evaluators check: 'Does this team understand WHY this matters NOW?' "
+            "Without policy anchoring, the WHY NOW is missing — scored as 'nice to have, not urgent.'"
+        )
+    elif len(found) < 3:
+        gap_result.add(
+            "G3", "Weak Outside-In Anchoring", "MEDIUM",
+            "Relevance",
+            f"Only {len(found)} policy/regulatory reference(s) found: {', '.join(found[:5])}. "
+            "Evaluators expect multiple external forces justifying urgency.",
+            "Strengthen with 1-2 more specific references (named directives, dates, mandates).",
+            "More anchors = stronger 'WHY NOW' = higher Relevance score."
+        )
+
+
+def check_credential_specificity(pages: dict, start: int, gap_result: GapAnalysisResult,
+                                  model: 'ProposalModel'):
+    """G5: Are coordinator/partner credentials specific or generic?"""
+    full_text = get_full_text(pages) if hasattr(pages, '__iter__') else ""
+    lower = full_text.lower()
+
+    specific_count = sum(1 for pat in _CREDENTIAL_SPECIFIC
+                         if re.search(pat, lower, re.IGNORECASE))
+    generic_count = sum(1 for pat in _CREDENTIAL_GENERIC
+                        if re.search(pat, lower, re.IGNORECASE))
+
+    if specific_count == 0 and generic_count > 0:
+        gap_result.add(
+            "G5", "Generic Coordinator Credentials", "CRITICAL",
+            "Consortium / Aktörer",
+            f"Found {generic_count} generic credential claims but 0 specific ones. "
+            "Descriptions like 'specialiserat företag' or 'ledande aktör' carry zero evaluator weight.",
+            "Replace generic claims with: [X years] in [specific domain], "
+            "[named role] at [named organization], [specific deliverable/publication]. "
+            "Example: '14 years of factory-floor experience in automotive and defence supply chains, "
+            "Working Group Lead for Manufacturing at the Digital Twin Consortium.'",
+            "Evaluators mentally sort: 'Have these people actually DONE this before?' "
+            "Generic descriptions get scored as 'unproven team.'"
+        )
+    elif specific_count < 3:
+        gap_result.add(
+            "G5", "Thin Credential Evidence", "HIGH",
+            "Consortium / Aktörer",
+            f"Only {specific_count} specific credential marker(s). "
+            "Each partner needs demonstrable, verifiable track record.",
+            "Add named years, roles, certifications, or publications for each key person.",
+            "More specific = more credible = higher Aktörer score."
+        )
+
+
+def check_asis_tobe_quantification(pages: dict, start: int, gap_result: GapAnalysisResult,
+                                    lang: str):
+    """G9: Does the proposal have paired quantified AS-IS → TO-BE statements?"""
+    full_text = ""
+    for num, text in pages.items():
+        if num >= start:
+            full_text += text + "\n"
+    lower = full_text.lower()
+
+    before_after_patterns = [
+        r'(?:idag|nuläge|as.is|current|befintlig|nuvarande).*?\d+.*?(?:efter|to.be|mål|target|ska bli)',
+        r'0\s*%.*?(?:\d{2,3})\s*%',
+        r'från\s+\d+.*?till\s+\d+',
+        r'from\s+\d+.*?to\s+\d+',
+        r'(?:minska|reducera|öka|förbättra).*?\d+\s*%',
+        r'(?:reduce|increase|improve).*?\d+\s*%',
+    ]
+
+    pairs_found = sum(1 for pat in before_after_patterns
+                      if re.search(pat, lower, re.IGNORECASE))
+
+    if pairs_found == 0:
+        gap_result.add(
+            "G9", "No AS-IS → TO-BE Quantification", "CRITICAL",
+            "Problem statement / Impact",
+            "No paired before/after quantification found. "
+            "The proposal describes what it will DO but not the measurable delta.",
+            "Add explicit pairs: '0% digital documentation today → 80% after 14 months.' "
+            "'Manual planning: 12h/week → Automated: 2h/week.' "
+            "'Key-person risk: 5 critical → Documented: 0 single-point failures.'",
+            "Evaluators need to see the SIZE of the improvement. "
+            "Without quantified deltas, impact is speculative."
+        )
+    elif pairs_found < 3:
+        gap_result.add(
+            "G9", "Weak AS-IS → TO-BE Quantification", "MEDIUM",
+            "Impact",
+            f"Only {pairs_found} quantified before/after pair(s). "
+            "Strong proposals have 4-6 measurable deltas.",
+            "Add more paired metrics: time saved, cost reduced, risk eliminated, coverage increased.",
+            "More quantified deltas = more convincing impact narrative."
+        )
+
+
+def check_adoption_funnel(pages: dict, start: int, gap_result: GapAnalysisResult, lang: str):
+    """G8: Is the scaling/adoption path specific with approach → target → evidence?"""
+    full_text = ""
+    for num, text in pages.items():
+        if num >= start:
+            full_text += text + "\n"
+    lower = full_text.lower()
+
+    funnel_markers_sv = ['approachera', 'nå ut till', 'kontakta', 'pilot',
+                         'adoptör', 'intresse', 'nätverk', 'medlemsföretag',
+                         'replikerbar', 'skalbar', 'spridning']
+    funnel_markers_en = ['approach', 'reach out', 'contact', 'pilot',
+                         'adopter', 'interest', 'network', 'member',
+                         'replicable', 'scalable', 'dissemination']
+    markers = funnel_markers_sv if lang == 'sv' else funnel_markers_en
+
+    found_markers = [m for m in markers if m in lower]
+
+    has_reach_number = bool(re.search(r'(?:approach|nå ut|kontakta)\s*\d+', lower))
+    has_target_number = bool(re.search(r'(?:mål|target|goal|sikta).*?\d+', lower))
+    has_evidence = bool(re.search(
+        r'(?:redan|already|uttryckt intresse|expressed interest|i vårt nätverk|in our network)',
+        lower))
+
+    funnel_score = sum([has_reach_number, has_target_number, has_evidence])
+
+    if funnel_score == 0 and len(found_markers) < 3:
+        gap_result.add(
+            "G8", "No Adoption Funnel", "HIGH",
+            "Impact / Scaling",
+            "No specific adoption path found. No reach numbers, no conversion targets, "
+            "no evidence of existing interest.",
+            "Add the adoption funnel: 'Approach [X] organizations, target [Y] pilot adopters, "
+            "[Z] have already expressed interest.' Include named channels (SBI, industry associations).",
+            "Evaluators check: 'Will anyone actually USE this after the project ends?' "
+            "Vague dissemination plans score poorly."
+        )
+    elif funnel_score < 2:
+        missing = []
+        if not has_reach_number:
+            missing.append("reach number")
+        if not has_target_number:
+            missing.append("conversion target")
+        if not has_evidence:
+            missing.append("evidence of existing interest")
+        gap_result.add(
+            "G8", "Incomplete Adoption Funnel", "MEDIUM",
+            "Impact / Scaling",
+            f"Adoption path present but missing: {', '.join(missing)}.",
+            f"Add: {', '.join(missing)}.",
+            "Complete funnels convince evaluators the results won't sit on a shelf."
+        )
+
+
+def check_methodology_operationalization(pages: dict, start: int, gap_result: GapAnalysisResult,
+                                          lang: str):
+    """G9b: If a named methodology is referenced, is it applied with AS-IS numbers from THIS case?"""
+    full_text = ""
+    for num, text in pages.items():
+        if num >= start:
+            full_text += text + "\n"
+    lower = full_text.lower()
+
+    methodologies = re.findall(
+        r'\b(?:smile|lean|agile|scrum|six sigma|kaizen|triz|dmaic|pdca|'
+        r'design thinking|action research|grounded theory|'
+        r'iec 63278|iso \d+|asset administration shell)\b',
+        lower, re.IGNORECASE)
+    unique_methods = set(m.lower() for m in methodologies)
+
+    if not unique_methods:
+        return
+
+    operationalized = False
+    for method in unique_methods:
+        method_region = ""
+        for m in re.finditer(re.escape(method), lower):
+            start_pos = max(0, m.start() - 500)
+            end_pos = min(len(lower), m.end() + 1000)
+            method_region += lower[start_pos:end_pos]
+        has_numbers = bool(re.search(r'\d+\s*(?:anställda|medarbetare|employee|station|system|%)',
+                                      method_region))
+        has_case_ref = bool(re.search(r'(?:vsab|företag|company|fabrik|factory|produktion)',
+                                       method_region))
+        if has_numbers and has_case_ref:
+            operationalized = True
+            break
+
+    if not operationalized:
+        gap_result.add(
+            "G9b", "Methodology Not Operationalized", "HIGH",
+            "Methodology / Approach",
+            f"Named methodology/standard ({', '.join(unique_methods)}) referenced but not grounded "
+            "in the specific case with real numbers.",
+            "After naming each methodology phase, add: 'Applied to [company]: "
+            "[X employees], [Y stations], [Z systems], [current state metric].' "
+            "The methodology must touch the ground, not float above it.",
+            "Evaluators distinguish between 'knows the method' and 'has applied the method to THIS case.' "
+            "Only the latter scores high on Genomförbarhet."
+        )
+
+
+def check_scenario_placement(pages: dict, start: int, gap_result: GapAnalysisResult, lang: str):
+    """G4: Are crisis/mobilization scenarios in Impact-visible sections, not buried?"""
+    full_text_by_page = {}
+    for num, text in pages.items():
+        if num >= start:
+            full_text_by_page[num] = text.lower()
+
+    scenario_markers_sv = ['väpnad konflikt', 'mobilisering', 'krigstid', 'höjd beredskap',
+                           'kris', 'scenario', 'om.*mobiliseras', 'vid.*krig']
+    scenario_markers_en = ['armed conflict', 'mobilization', 'wartime', 'heightened readiness',
+                           'crisis', 'scenario', 'if.*mobilized', 'during.*war']
+    markers = scenario_markers_sv if lang == 'sv' else scenario_markers_en
+
+    found_pages = []
+    for num, text in full_text_by_page.items():
+        if any(re.search(m, text) for m in markers):
+            found_pages.append(num)
+
+    if not found_pages:
+        gap_result.add(
+            "G4", "No Crisis Scenario", "HIGH",
+            "Impact / Potential",
+            "No crisis, mobilization, or heightened-readiness scenario found anywhere in the proposal.",
+            "Add at least one concrete scenario: 'If 20% of personnel are mobilized, "
+            "the digital twin enables new operators to become productive in days instead of months.'",
+            "For defence/resilience calls, evaluators EXPECT worst-case scenario analysis. "
+            "Without it, the proposal seems naive about the problem it claims to solve."
+        )
+    elif all(p > start + 5 for p in found_pages):
+        gap_result.add(
+            "G4", "Crisis Scenario Buried", "MEDIUM",
+            "Impact / Potential",
+            f"Crisis scenario found but only on page(s) {found_pages} — deep in the proposal. "
+            "Evaluators may not reach it before scoring.",
+            "Move the strongest scenario to the Impact/Potential section (pages 2-4). "
+            "The evaluator should encounter it before forming their impression.",
+            "Evaluators read front-to-back but score before they finish. "
+            "Buried scenarios = missed impact points."
+        )
+
+
+def check_budget_narrative_quality(pages: dict, start: int, gap_result: GapAnalysisResult,
+                                    lang: str):
+    """G6: Enhanced budget narrative check — does it explain WHY the allocation, not just numbers?"""
+    full_text = ""
+    for num, text in pages.items():
+        if num >= start:
+            full_text += text + "\n"
+    lower = full_text.lower()
+
+    has_budget_section = bool(re.search(r'budget|kostnadsplan|finansiering', lower))
+    if not has_budget_section:
+        return
+
+    allocation_explanation = [
+        r'\d+\s*%\s*(?:av\s+budget|of\s+budget|av\s+totala)',
+        r'budget(?:fördelning|allocation).*speglar',
+        r'(?:timmar|hours|arbetstimmar|FTE).*(?:\d+\s*av\s*\d+|\d+\s*/\s*\d+)',
+    ]
+    role_justification = [
+        r'(?:ansvar|responsible|utför|performs|leder|leads).*(?:\d+\s*%|\d+\s*h)',
+        r'(?:projektledning|coordination|vetenskaplig|scientific|validering|validation)',
+    ]
+
+    has_allocation = any(re.search(pat, lower) for pat in allocation_explanation)
+    has_roles = any(re.search(pat, lower) for pat in role_justification)
+
+    if not has_allocation and not has_roles:
+        gap_result.add(
+            "G6", "Budget Without Narrative Justification", "HIGH",
+            "Budget",
+            "Budget section has numbers but no narrative explaining WHY the allocation is what it is. "
+            "No per-partner role justification found.",
+            "Add: '[Partner A] ([X]% of budget) performs [Y]% of total hours ([Z] of [Total] h) "
+            "including [specific tasks]. [Partner B] ([X]%) is responsible for [specific role].' "
+            "The narrative must connect money to work to deliverables.",
+            "Evaluators check: 'Is the money going where the work is?' "
+            "Numbers without narrative look like padding or arbitrary splits."
+        )
+    elif not has_allocation:
+        gap_result.add(
+            "G6", "Budget Missing Allocation Rationale", "MEDIUM",
+            "Budget",
+            "Budget has role descriptions but no explicit % or hours allocation rationale.",
+            "Add percentage breakdown with hours per partner.",
+            "Evaluators want to see the math: % budget ≈ % effort."
+        )
+
+
+def check_concept_coinage(pages: dict, start: int, gap_result: GapAnalysisResult, lang: str):
+    """G7: Does the proposal introduce a memorable coined concept tied to the call language?"""
+    first_pages_text = ""
+    for num in range(start, min(start + 5, max(pages.keys()) + 1)):
+        first_pages_text += pages.get(num, "") + "\n"
+    lower = first_pages_text.lower()
+
+    coinage_patterns = [
+        r'(?:vi\s+kallar|we\s+call|what\s+we\s+term|vi\s+definierar|we\s+define)',
+        r'(?:total.?digital|cyber.?physical|reality\s+programmable|edge.?native)',
+        r'(?:konceptet|the\s+concept\s+of)',
+        r'[A-Z]{3,}[\s-]+(?:modell|model|framework|arkitektur|approach)',
+    ]
+
+    found = [pat for pat in coinage_patterns if re.search(pat, lower)]
+
+    if not found:
+        gap_result.add(
+            "G7", "No Memorable Concept", "MEDIUM",
+            "Opening / Framework",
+            "No coined concept or memorable term introduced in the first 5 pages. "
+            "The proposal uses only standard terminology.",
+            "Introduce ONE memorable concept that connects your approach to the call's language. "
+            "Examples: 'total-digitalförsvar', 'Reality Programmable Interface', "
+            "'Knowledge-as-Infrastructure.' The evaluator should remember YOUR term when scoring.",
+            "Evaluators discuss proposals by shorthand. If your proposal has no memorable concept, "
+            "it gets discussed as 'the digital twin one' — same as 5 others."
+        )
+
+
+def run_prescriptive_gap_analysis(pages: dict, start: int, model: 'ProposalModel',
+                                   call_text: Optional[str] = None) -> GapAnalysisResult:
+    """Run all 9 prescriptive gap detectors. Returns GapAnalysisResult with ordered gaps.
+
+    This pass simulates what an evaluator NEEDS to see and flags what's missing,
+    with fix templates. Designed to be run iteratively during proposal writing.
+    """
+    gap_result = GapAnalysisResult()
+    full_text = get_full_text(pages)
+    lang = detect_language(full_text)
+
+    detectors = [
+        ("AIDA Opening", lambda: check_aida_opening(pages, start, gap_result, lang)),
+        ("Outside-In Anchoring", lambda: check_outside_in_anchoring(pages, start, gap_result, lang)),
+        ("Credential Specificity", lambda: check_credential_specificity(pages, start, gap_result, model)),
+        ("AS-IS→TO-BE", lambda: check_asis_tobe_quantification(pages, start, gap_result, lang)),
+        ("Scenario Placement", lambda: check_scenario_placement(pages, start, gap_result, lang)),
+        ("Budget Narrative", lambda: check_budget_narrative_quality(pages, start, gap_result, lang)),
+        ("Concept Coinage", lambda: check_concept_coinage(pages, start, gap_result, lang)),
+        ("Adoption Funnel", lambda: check_adoption_funnel(pages, start, gap_result, lang)),
+        ("Methodology Operationalization",
+         lambda: check_methodology_operationalization(pages, start, gap_result, lang)),
+    ]
+
+    for name, fn in detectors:
+        try:
+            fn()
+        except Exception:
+            pass
+
+    severity_weights = {"CRITICAL": 3.0, "HIGH": 2.0, "MEDIUM": 1.0}
+    total_penalty = sum(severity_weights.get(g.severity, 1.0) for g in gap_result.gaps)
+    gap_result.score = round(max(0.0, min(10.0, 10.0 - total_penalty)), 1)
+
+    gap_result.gaps.sort(key=lambda g: {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2}.get(g.severity, 3))
+
+    return gap_result
+
+
+def format_gap_analysis(gap_result: GapAnalysisResult) -> list:
+    """Format prescriptive gap analysis as report lines."""
+    lines = []
+    lines.append("  PRESCRIPTIVE GAP ANALYSIS (evaluator perspective)")
+    lines.append("  " + "-" * 72)
+    lines.append(f"  {len(gap_result.gaps)} gap(s) identified  |  "
+                 f"Score: {gap_result.score}/10.0  |  "
+                 f"Critical: {sum(1 for g in gap_result.gaps if g.severity == 'CRITICAL')}  "
+                 f"High: {sum(1 for g in gap_result.gaps if g.severity == 'HIGH')}  "
+                 f"Medium: {sum(1 for g in gap_result.gaps if g.severity == 'MEDIUM')}")
+    lines.append("")
+
+    if not gap_result.gaps:
+        lines.append("  No prescriptive gaps detected — proposal covers all 9 evaluator expectations.")
+        lines.append("")
+        return lines
+
+    for g in gap_result.gaps:
+        icon = {"CRITICAL": "!!!", "HIGH": " ! ", "MEDIUM": " ~ "}.get(g.severity, "   ")
+        lines.append(f"  [{icon}] {g.gap_id}: {g.name}  ({g.severity})")
+        lines.append(f"         Section: {g.section}")
+        lines.append(f"         Issue:   {g.description[:120]}")
+        lines.append(f"         Fix:     {g.fix_template[:120]}")
+        lines.append(f"         Why:     {g.evaluator_impact[:120]}")
+        lines.append("")
+
+    lines.append(f"  GAP SCORE:  {gap_result.score}/10.0")
+    if gap_result.score >= 9.0:
+        lines.append("  VERDICT:  Minor polish needed — proposal is evaluator-ready.")
+    elif gap_result.score >= 7.0:
+        lines.append("  VERDICT:  Fixable gaps — address HIGH/CRITICAL before submission.")
+    elif gap_result.score >= 5.0:
+        lines.append("  VERDICT:  Significant gaps — proposal needs structural revision.")
+    else:
+        lines.append("  VERDICT:  Major gaps — proposal is not evaluator-ready.")
+    lines.append("")
+    return lines
+
+
+# ============================================================
 # PRE-FLIGHT RUNNER
 # ============================================================
 
@@ -2868,7 +4131,7 @@ def format_eic_pathfinder_scores(scores: dict) -> list:
 # STRATEGIC DIMENSION SCORING
 # ============================================================
 
-def score_strategic_dimensions(model: ProposalModel) -> dict:
+def score_strategic_dimensions(model: ProposalModel, doc_scale: str = "standard") -> dict:
     """Score proposal across 8 strategic dimensions beyond call criteria."""
     text = model.full_text.lower() if model.full_text else ""
     scores = {}
@@ -2876,8 +4139,7 @@ def score_strategic_dimensions(model: ProposalModel) -> dict:
     for dim_key, dim in STRATEGIC_DIMENSIONS.items():
         found = sum(1 for m in dim["markers"] if m in text)
         total = len(dim["markers"])
-        raw_pct = (found / total * 100) if total > 0 else 0
-        score_5 = round(max(1.0, min(5.0, 1.0 + raw_pct * 0.04)), 1)
+        score_5 = _score_markers(found, total, doc_scale)
         scores[dim_key] = {
             "name": dim["name"],
             "score": score_5,
@@ -3093,7 +4355,8 @@ def format_report(result: AnalysisResult, pdf_path: str, model: ProposalModel,
                   future_scores: Optional[dict] = None,
                   pestled_scores: Optional[dict] = None,
                   interop_scores: Optional[dict] = None,
-                  stress_scores: Optional[dict] = None) -> str:
+                  stress_scores: Optional[dict] = None,
+                  gap_scores: Optional[GapAnalysisResult] = None) -> str:
     scores = estimate_scores(result, model)
     total = sum(scores.values())
     severity_counts = Counter(f.severity for f in result.findings)
@@ -3157,9 +4420,9 @@ def format_report(result: AnalysisResult, pdf_path: str, model: ProposalModel,
     if future_scores:
         lines.extend(format_future_tech_radar(future_scores))
 
-    # --- PESTLE+D (if available) ---
+    # --- PESTELED (if available) ---
     if pestled_scores:
-        lines.extend(format_pestled(pestled_scores))
+        lines.extend(format_pesteled(pestled_scores))
 
     # --- EU Interoperability Framework (if available) ---
     if interop_scores:
@@ -3169,17 +4432,27 @@ def format_report(result: AnalysisResult, pdf_path: str, model: ProposalModel,
     if stress_scores:
         lines.extend(format_stress_test(stress_scores))
 
-    # --- Composite CRUCIBLE Score (if all components available) ---
-    if eic_scores and strategic_scores and future_scores and pestled_scores and interop_scores and stress_scores:
-        eic_avg = eic_scores.get("_weighted_total", 0)
+    # --- Prescriptive Gap Analysis (always runs) ---
+    if gap_scores:
+        lines.extend(format_gap_analysis(gap_scores))
+
+    # --- Composite CRUCIBLE Score ---
+    if strategic_scores and future_scores and pestled_scores and interop_scores and stress_scores:
         strat_avg = strategic_scores.get("_weighted_avg", 0)
         future_avg = future_scores.get("_weighted_avg", 0)
         pestled_avg = pestled_scores.get("_weighted_avg", 0)
         interop_avg = interop_scores.get("_weighted_avg", 0)
         stress_avg = stress_scores.get("_overall", 0)
 
-        composite = (eic_avg * 0.35 + strat_avg * 0.15 + future_avg * 0.10 +
-                     pestled_avg * 0.15 + interop_avg * 0.15 + stress_avg * 0.10)
+        if eic_scores:
+            eic_avg = eic_scores.get("_weighted_total", 0)
+            composite = (eic_avg * 0.35 + strat_avg * 0.15 + future_avg * 0.10 +
+                         pestled_avg * 0.15 + interop_avg * 0.15 + stress_avg * 0.10)
+        else:
+            eic_avg = None
+            composite = (strat_avg * 0.25 + future_avg * 0.15 +
+                         pestled_avg * 0.20 + interop_avg * 0.25 + stress_avg * 0.15)
+
         grade = ("S" if composite >= 4.5 else "A" if composite >= 4.0 else
                  "B" if composite >= 3.5 else "C" if composite >= 3.0 else "D")
 
@@ -3188,12 +4461,19 @@ def format_report(result: AnalysisResult, pdf_path: str, model: ProposalModel,
         lines.append("  " + "=" * (w - 4))
         lines.append(f"  CRUCIBLE COMPOSITE SCORE")
         lines.append(f"  {composite:.2f} / 5.00  [{cb}]  Grade: {grade}")
-        lines.append(f"    EIC Criteria (35%):    {eic_avg:.2f}")
-        lines.append(f"    Strategic (15%):       {strat_avg:.2f}")
-        lines.append(f"    Future Ready (10%):    {future_avg:.2f}")
-        lines.append(f"    PESTLE+D (15%):        {pestled_avg:.2f}")
-        lines.append(f"    EU Interop (15%):      {interop_avg:.2f}")
-        lines.append(f"    Stress Test (10%):     {stress_avg:.2f}")
+        if eic_avg is not None:
+            lines.append(f"    EIC Criteria (35%):    {eic_avg:.2f}")
+            lines.append(f"    Strategic (15%):       {strat_avg:.2f}")
+            lines.append(f"    Future Ready (10%):    {future_avg:.2f}")
+            lines.append(f"    PESTELED (15%):        {pestled_avg:.2f}")
+            lines.append(f"    EU Interop (15%):      {interop_avg:.2f}")
+            lines.append(f"    Stress Test (10%):     {stress_avg:.2f}")
+        else:
+            lines.append(f"    Strategic (25%):       {strat_avg:.2f}")
+            lines.append(f"    Future Ready (15%):    {future_avg:.2f}")
+            lines.append(f"    PESTELED (20%):        {pestled_avg:.2f}")
+            lines.append(f"    EU Interop (25%):      {interop_avg:.2f}")
+            lines.append(f"    Stress Test (15%):     {stress_avg:.2f}")
         lines.append("  " + "=" * (w - 4))
         lines.append("")
 
@@ -3341,6 +4621,14 @@ def run_analysis(pdf_path: str, call_path: Optional[str] = None,
         print("  Pass 1: Extraction...")
     model = extract_proposal_model(pages, page_count)
 
+    # Pass 0.1: Spatial-temporal anchoring
+    anchor = detect_anchor(model.full_text, model.total_pages)
+    doc_scale = anchor.doc_scale
+    if verbose:
+        print(f"  Anchor: lang={anchor.language}, country={anchor.country or '?'}, "
+              f"region={anchor.region or '?'}, funder={anchor.funding_body or '?'}, "
+              f"scale={doc_scale} ({anchor.page_count}p/{anchor.word_count}w)")
+
     if verbose:
         print(model.summary())
         print(f"\n  Part B starts at page {model.part_b_start_page}")
@@ -3423,39 +4711,46 @@ def run_analysis(pdf_path: str, call_path: Optional[str] = None,
     if verbose:
         print("  Pass 0: Pre-flight checklist complete")
 
+    # Prescriptive Gap Analysis — always runs (language-agnostic)
+    if verbose:
+        print("  Pass 2.5: Prescriptive Gap Analysis...")
+    gap_scores = run_prescriptive_gap_analysis(pages, start, model, call_text)
+    if verbose:
+        print(f"  Gap analysis: {len(gap_scores.gaps)} gap(s), score {gap_scores.score}/10.0")
+
     # EIC Pathfinder mode: call-specific scoring + strategic dimensions + future radar
     eic_scores = None
     strategic_scores = None
     future_scores = None
-    pestled_scores = None
-    interop_scores = None
-    stress_scores = None
     if eic_pathfinder:
         if verbose:
             print("  Pass 3: EIC Pathfinder scoring...")
         eic_scores = score_eic_pathfinder(model, result)
-        strategic_scores = score_strategic_dimensions(model)
-        if verbose:
-            print("  Pass 4: Future Tech Radar (3yr/5yr/10yr)...")
-        future_scores = score_future_tech_radar(model)
-        if verbose:
-            print("  Pass 5: PESTLE+D regional environment...")
-        pestled_scores = score_pestled(model)
-        if verbose:
-            print("  Pass 6: EU Interoperability Framework...")
-        interop_scores = score_eu_interop(model)
-        if verbose:
-            print("  Pass 7: Concept/Context/Crisis stress test...")
-        stress_scores = score_stress_test(model)
 
-    return (result, model, smile_scores, pf_results, eic_scores,
+    if verbose:
+        print("  Pass 3b: Strategic dimensions...")
+    strategic_scores = score_strategic_dimensions(model, doc_scale)
+    if verbose:
+        print("  Pass 4: Future Tech Radar (3yr/5yr/10yr)...")
+    future_scores = score_future_tech_radar(model, doc_scale)
+    if verbose:
+        print("  Pass 5: PESTELED regional environment...")
+    pestled_scores = score_pesteled(model, doc_scale)
+    if verbose:
+        print("  Pass 6: EU Interoperability Framework...")
+    interop_scores = score_eu_interop(model, doc_scale)
+    if verbose:
+        print("  Pass 7: Concept/Context/Crisis stress test...")
+    stress_scores = score_stress_test(model)
+
+    return (result, model, smile_scores, pf_results, gap_scores, eic_scores,
             strategic_scores, future_scores, pestled_scores,
-            interop_scores, stress_scores)
+            interop_scores, stress_scores, anchor)
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="C.R.U.C.I.B.L.E. v5.0.0 — Full Horizon Europe proposal analyzer",
+        description="C.R.U.C.I.B.L.E. v5.1.0 — Full Horizon Europe proposal analyzer",
         epilog="Two-pass: Extract → Analyze. Built on SMILE methodology. Impact first, data last.",
     )
     parser.add_argument("pdf", help="Path to proposal PDF")
@@ -3489,9 +4784,9 @@ def main():
     if args.eic_pathfinder:
         print("  EIC Pathfinder Open mode: enabled")
 
-    (result, model, smile_scores, pf_results, eic_scores,
+    (result, model, smile_scores, pf_results, gap_scores, eic_scores,
      strategic_scores, future_scores, pestled_scores,
-     interop_scores, stress_scores) = run_analysis(
+     interop_scores, stress_scores, anchor) = run_analysis(
         args.pdf, args.call, args.verbose, args.budget, args.eic_pathfinder
     )
 
@@ -3503,7 +4798,8 @@ def main():
                            bool(args.call), args.budget,
                            args.eic_pathfinder, pf_results,
                            eic_scores, strategic_scores, future_scores,
-                           pestled_scores, interop_scores, stress_scores)
+                           pestled_scores, interop_scores, stress_scores,
+                           gap_scores)
     print(report)
 
     if args.output:
@@ -3549,9 +4845,21 @@ def main():
             "smile_coverage": smile_scores,
             "eic_pathfinder_scores": eic_scores,
             "strategic_dimensions": strategic_scores,
+            "anchor": {
+                "language": anchor.language,
+                "country": anchor.country,
+                "region": anchor.region,
+                "cities": anchor.cities,
+                "funding_body": anchor.funding_body,
+                "funding_program": anchor.funding_program,
+                "doc_scale": anchor.doc_scale,
+                "word_count": anchor.word_count,
+                "page_count": anchor.page_count,
+            },
             "pestled_scores": pestled_scores,
             "eu_interop_scores": interop_scores,
             "stress_test_scores": stress_scores,
+            "gap_analysis": gap_scores.to_dict() if gap_scores else None,
             "pre_flight": [
                 {"id": q["id"], "question": q["question"],
                  "weight": q["weight"], "result": r}
