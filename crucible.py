@@ -1,31 +1,38 @@
 #!/usr/bin/env python3
 """
-C.R.U.C.I.B.L.E. v5.1.0
+C.R.U.C.I.B.L.E. v7.0.0
 Consortia Review Under Controlled Interrogation — Before Live Evaluation
 
-Two-pass full-proposal analyzer for Horizon Europe.
-EIC Pathfinder Open call-specific evaluation, pre-flight checklist,
-PESTELED regional analysis, EU Interoperability Framework, and stress testing.
+Modular proposal analyzer with call-specific plugins.
+Universal core engine + pluggable modules for any funding body.
 
-Pass 0: PRE-FLIGHT — 10 gatekeeper questions before analysis runs
-Pass 1: EXTRACTION — build a structured ProposalModel from the entire PDF
-Pass 2: ANALYSIS — four layers
-  Layer 1: STRUCTURAL INTEGRITY  — cross-document consistency
-  Layer 2: CALL ALIGNMENT        — proposal vs call requirements
-  Layer 3: FIELD & SMILE         — field awareness + SMILE methodology
-  Layer 4: ANTI-PATTERNS         — 45+ mechanical checks
-Pass 3: STRATEGIC SCORING — time to market, innovation depth, partnerships, etc.
-Pass 4: PESTELED — regional environment analysis across 8 dimensions
-Pass 5: EU INTEROPERABILITY FRAMEWORK — 7-layer interoperability assessment
-Pass 6: CONCEPT / CONTEXT / CRISIS — triple stress test
+Built-in modules:
+  - horizon-europe: Horizon Europe / EIC Pathfinder / EU Framework Programme
+  - vinnova: Swedish Innovation Agency (Impact Innovation, SIP, etc.)
+
+Architecture:
+  Pass 0: PRE-FLIGHT — gatekeeper questions (universal + module-specific)
+  Pass 0.1: ANCHOR — language, geography, funder auto-detection
+  Pass 1: EXTRACTION — build ProposalModel from PDF
+  Pass 2: ANALYSIS — four layers
+    Layer 1: STRUCTURAL INTEGRITY  — universal + module-specific checks
+    Layer 2: CALL ALIGNMENT        — proposal vs call text
+    Layer 3: FIELD & SMILE         — field awareness + SMILE methodology
+    Layer 4: ANTI-PATTERNS         — universal + module-specific detectors
+  Pass 3: SCORING — strategic dimensions + module-specific scoring
+  Pass 4: PESTELED — regional environment (8 dimensions)
+  Pass 5: EU INTEROPERABILITY FRAMEWORK — 7-layer assessment
+  Pass 6: CONCEPT / CONTEXT / CRISIS — triple stress test
+
+Module auto-detection: spatial-temporal anchor selects the right module.
+Unknown patterns logged to modules/lore.json for future incorporation.
 
 Usage:
   python crucible.py proposal.pdf
-  python crucible.py proposal.pdf --call call_text.txt
   python crucible.py proposal.pdf --call call_text.txt --verbose
-  python crucible.py proposal.pdf --call call_text.txt --json results.json
-  python crucible.py proposal.pdf --budget
-  python crucible.py proposal.pdf --eic-pathfinder  # EIC Pathfinder Open mode
+  python crucible.py proposal.pdf --module vinnova
+  python crucible.py proposal.pdf --eic-pathfinder
+  python crucible.py --list-modules
 
 License: MIT — WINNIIO AB / Life Atlas
 """
@@ -41,11 +48,29 @@ from typing import Optional
 
 try:
     import fitz
+    _HAS_FITZ = True
 except ImportError:
-    print("ERROR: pymupdf required. Install with: pip install pymupdf")
-    sys.exit(1)
+    _HAS_FITZ = False
 
-__version__ = "6.0.0"
+try:
+    from docx import Document as DocxDocument
+    _HAS_DOCX = True
+except ImportError:
+    _HAS_DOCX = False
+
+try:
+    import markdown
+    _HAS_MARKDOWN = True
+except ImportError:
+    _HAS_MARKDOWN = False
+
+try:
+    from modules import get_registry, LoreLog, CallModule
+    _HAS_MODULES = True
+except ImportError:
+    _HAS_MODULES = False
+
+__version__ = "7.1.0"
 
 
 # ============================================================
@@ -1826,6 +1851,13 @@ class ProposalModel:
     subcontracting_total: float = 0.0
     equipment_total: float = 0.0
     travel_total: float = 0.0
+
+    # Universal structural fields (call-agnostic)
+    wp_hours_total: float = 0.0
+    person_hours_total: float = 0.0
+    tables_detected: int = 0
+    tables_empty: int = 0
+    named_entities: dict = field(default_factory=dict)  # {entity: {revenue, employees, ...}}
     indirect_total: float = 0.0
     personnel_total: float = 0.0
 
@@ -1885,12 +1917,70 @@ class AnalysisResult:
 # PASS 1: EXTRACTION
 # ============================================================
 
-def extract_text(pdf_path: str) -> tuple[dict, int]:
-    doc = fitz.open(pdf_path)
+def _extract_from_pdf(path: str) -> tuple[dict, int]:
+    """Extract page-indexed text from a PDF via pymupdf."""
+    if not _HAS_FITZ:
+        print("ERROR: pymupdf required for PDF. Install with: pip install pymupdf")
+        sys.exit(1)
+    doc = fitz.open(path)
     pages = {}
     for i in range(len(doc)):
         pages[i + 1] = doc[i].get_text()
     return pages, len(doc)
+
+
+# Non-PDF formats lack real page breaks, so we approximate at ~3000 chars/page
+# (roughly one A4 page of body text). Scores that depend on page count will be
+# approximate for these formats, but structural and textual analysis is unaffected.
+_CHARS_PER_VIRTUAL_PAGE = 3000
+
+
+def _split_into_virtual_pages(text: str) -> tuple[dict, int]:
+    """Split a long string into virtual pages of ~3000 chars each."""
+    page_count = max(1, len(text) // _CHARS_PER_VIRTUAL_PAGE + 1)
+    pages = {}
+    for i in range(page_count):
+        start = i * _CHARS_PER_VIRTUAL_PAGE
+        pages[i + 1] = text[start:start + _CHARS_PER_VIRTUAL_PAGE]
+    return pages, page_count
+
+
+def _extract_from_docx(path: str) -> tuple[dict, int]:
+    """Extract text from a .docx file including table content."""
+    if not _HAS_DOCX:
+        print("ERROR: python-docx required for .docx. Install with: pip install python-docx")
+        sys.exit(1)
+    doc = DocxDocument(path)
+    parts = [p.text for p in doc.paragraphs]
+    for table in doc.tables:
+        for row in table.rows:
+            parts.append(" | ".join(cell.text for cell in row.cells))
+    return _split_into_virtual_pages("\n".join(parts))
+
+
+def _extract_from_text_file(path: str) -> tuple[dict, int]:
+    """Extract text from .md, .markdown, or .txt files."""
+    return _split_into_virtual_pages(Path(path).read_text(encoding="utf-8"))
+
+
+SUPPORTED_FORMATS = {".pdf", ".docx", ".md", ".markdown", ".txt"}
+
+
+def extract_text(file_path: str) -> tuple[dict, int]:
+    """Extract page-indexed text from any supported format.
+
+    Returns (pages_dict, page_count) where pages_dict is {1: text, 2: text, ...}.
+    """
+    ext = Path(file_path).suffix.lower()
+    if ext == ".pdf":
+        return _extract_from_pdf(file_path)
+    elif ext == ".docx":
+        return _extract_from_docx(file_path)
+    elif ext in (".md", ".markdown", ".txt"):
+        return _extract_from_text_file(file_path)
+    else:
+        print(f"ERROR: Unsupported format '{ext}'. Supported: {', '.join(sorted(SUPPORTED_FORMATS))}")
+        sys.exit(1)
 
 
 def is_admin_page(text: str) -> bool:
@@ -1925,9 +2015,23 @@ def get_part_b_text(pages: dict, start: int) -> str:
 
 
 def load_call_text(call_path: str) -> str:
-    if call_path.lower().endswith('.pdf'):
+    ext = Path(call_path).suffix.lower()
+    if ext == ".pdf":
+        if not _HAS_FITZ:
+            print("ERROR: pymupdf required for PDF call text.")
+            sys.exit(1)
         doc = fitz.open(call_path)
         return " ".join(doc[i].get_text() for i in range(len(doc)))
+    elif ext == ".docx":
+        if not _HAS_DOCX:
+            print("ERROR: python-docx required for .docx call text.")
+            sys.exit(1)
+        doc = DocxDocument(call_path)
+        parts = [p.text for p in doc.paragraphs]
+        for table in doc.tables:
+            for row in table.rows:
+                parts.append(" | ".join(c.text for c in row.cells))
+        return "\n".join(parts)
     return Path(call_path).read_text(encoding='utf-8')
 
 
@@ -2230,6 +2334,75 @@ def extract_proposal_model(pages: dict, page_count: int) -> ProposalModel:
     if ethics_section:
         flags = re.findall(r'(?:Yes|No)\s*[-–:]\s*([^\n]{10,120})', ethics_section.group(1))
         model.ethics_issues_flagged = [f.strip() for f in flags[:10]]
+
+    # --- Tables: detect and count empty ---
+    table_row_pattern = re.compile(
+        r'(?:^|\n)([^\n]*\|[^\n]*\|[^\n]*)', re.MULTILINE
+    )
+    table_rows = table_row_pattern.findall(full)
+    if table_rows:
+        model.tables_detected = 1  # at minimum one table-like structure
+        header_seen = False
+        for row in table_rows:
+            cells = [c.strip() for c in row.split('|') if c.strip()]
+            if not cells:
+                continue
+            if not header_seen:
+                header_seen = True
+                continue
+            if all(len(c) == 0 or c in ('-', '—', '–') for c in cells):
+                model.tables_empty += 1
+
+    # --- Hours: WP/AP hours and person hours ---
+    wp_hour_matches = re.findall(
+        r'(?:WP|AP|Work\s*Package|Arbetspaket)\s*\d+[^\n]*?(\d{2,5})\s*'
+        r'(?:timmar|hours?|h\b|tim\b|PM)',
+        full, re.IGNORECASE
+    )
+    if wp_hour_matches:
+        model.wp_hours_total = sum(float(h) for h in wp_hour_matches)
+
+    total_hours_m = re.search(
+        r'(?:Total|Totalt|Summa)[^\n]*?(\d{3,5})\s*(?:timmar|hours?|h\b|tim\b)',
+        full, re.IGNORECASE
+    )
+    if total_hours_m:
+        model.person_hours_total = float(total_hours_m.group(1))
+
+    # --- Named entities: extract org names with revenue/employee figures ---
+    org_patterns = [
+        (r'([A-ZÅÄÖ][A-Za-zåäö\s&\-]{3,40}(?:AB|Ltd|GmbH|Inc|SA|BV|OY))'
+         r'[^\n]*?(\d[\d\s,\.]*)\s*(?:MSEK|MEUR|M\s*SEK|M\s*EUR|miljoner)',
+         'revenue'),
+        (r'([A-ZÅÄÖ][A-Za-zåäö\s&\-]{3,40}(?:AB|Ltd|GmbH|Inc|SA|BV|OY))'
+         r'[^\n]*?(\d{1,5})\s*(?:anställda|medarbetare|employees|FTE)',
+         'employees'),
+        (r'(\d[\d\s,\.]*)\s*(?:MSEK|MEUR|M\s*SEK|M\s*EUR|miljoner)[^\n]*?'
+         r'(?:omsättning|revenue|turnover)[^\n]*?([A-ZÅÄÖ][A-Za-zåäö\s&\-]{3,40})',
+         'revenue_rev'),
+        (r'(?:ca\s+)?(\d{1,5})\s*(?:anställda|medarbetare|employees)[^\n]*?'
+         r'([A-ZÅÄÖ][A-Za-zåäö\s&\-]{3,40})',
+         'employees_rev'),
+    ]
+    for pat, kind in org_patterns:
+        for m in re.finditer(pat, full):
+            if kind.endswith('_rev'):
+                val, org = m.group(1), m.group(2)
+            else:
+                org, val = m.group(1), m.group(2)
+            org = org.strip()
+            val_clean = re.sub(r'[\s,]', '', val).replace(',', '.')
+            try:
+                num = float(val_clean)
+            except ValueError:
+                continue
+            if org not in model.named_entities:
+                model.named_entities[org] = {'revenues': [], 'employees': []}
+            actual_kind = kind.replace('_rev', '')
+            if actual_kind == 'revenue':
+                model.named_entities[org]['revenues'].append(num)
+            else:
+                model.named_entities[org]['employees'].append(int(num))
 
     return model
 
@@ -2597,6 +2770,88 @@ def check_structural_integrity(model: ProposalModel, result: AnalysisResult):
                     f"Innovation Action has only {industry_ratio:.0f}% industry PMs.",
                     "IAs are expected to be industry-driven. Reviewers expect ≥40-50% industry effort.",
                     cat, layer)
+
+    # ================================================================
+    # UNIVERSAL CHECKS (call-agnostic — work for any funder/language)
+    # ================================================================
+
+    # --- U1: Empty tables (data rows with no text content) ---
+    if model.tables_empty > 0:
+        result.add("Empty Table Detected", "CRITICAL", 0,
+            f"{model.tables_empty} table(s) have data rows with no text content. "
+            "Empty tables signal incomplete sections that evaluators will penalise.",
+            "Fill all table data rows. If a table is intentionally empty, remove it or add 'N/A'.",
+            cat, layer)
+
+    # --- U2: WP hours vs person hours arithmetic ---
+    if model.wp_hours_total > 0 and model.person_hours_total > 0:
+        diff = abs(model.wp_hours_total - model.person_hours_total)
+        pct_diff = diff / max(model.wp_hours_total, model.person_hours_total) * 100
+        if pct_diff > 5:
+            result.add("Hours Arithmetic Mismatch", "CRITICAL", 0,
+                f"WP hours total ({model.wp_hours_total:,.0f}h) differs from person-hours total "
+                f"({model.person_hours_total:,.0f}h) by {pct_diff:.0f}%. "
+                "Evaluators will cross-check these numbers.",
+                "Ensure WP hour allocations sum to the same total as individual person-hour commitments.",
+                cat, layer)
+
+    # --- U3: Numeric consistency across text (same entity, different numbers) ---
+    if model.named_entities:
+        for entity, facts in model.named_entities.items():
+            revenues = facts.get('revenues', [])
+            employees = facts.get('employees', [])
+            if len(set(revenues)) > 1:
+                result.add("Revenue Figure Inconsistency", "HIGH", 0,
+                    f"'{entity}' has conflicting revenue figures: {', '.join(str(r) for r in set(revenues))}.",
+                    "Use one consistent revenue figure throughout the document.",
+                    cat, layer)
+            if len(set(employees)) > 1:
+                result.add("Employee Count Inconsistency", "HIGH", 0,
+                    f"'{entity}' has conflicting employee counts: {', '.join(str(e) for e in set(employees))}.",
+                    "Use one consistent employee count throughout. Clarify if subsets (e.g. production staff) differ from total.",
+                    cat, layer)
+
+    # --- U4: Scope-budget coherence (advanced tech in small budgets) ---
+    advanced_tech_markers = [
+        ('quantum', 2_000_000), ('blockchain', 1_500_000), ('autonomous vehicle', 3_000_000),
+        ('quantum-safe', 2_000_000), ('post-quantum', 2_000_000), ('AGI', 5_000_000),
+        ('fusion', 10_000_000), ('satellite', 5_000_000),
+    ]
+    budget_ref = model.budget_total if model.budget_total > 0 else 0
+    if budget_ref > 0:
+        text_lower = model.full_text.lower()
+        for tech, threshold in advanced_tech_markers:
+            if tech.lower() in text_lower and budget_ref < threshold:
+                hedged = any(h in text_lower for h in [
+                    f'prepared for {tech.lower()}', f'architecture for {tech.lower()}',
+                    f'readiness for {tech.lower()}', f'future {tech.lower()}',
+                    f'förbereds för {tech.lower()}',
+                ])
+                if not hedged:
+                    result.add("Scope-Budget Mismatch", "HIGH", 0,
+                        f"'{tech}' mentioned but budget is EUR {budget_ref:,.0f} "
+                        f"(threshold for credible {tech} work: EUR {threshold:,.0f}).",
+                        f"Either remove '{tech}' claims or hedge as 'architecture prepared for' / 'future-proofed'.",
+                        cat, layer)
+
+    # --- U5: Citation specificity (vague policy refs without doc IDs) ---
+    vague_policy_patterns = [
+        (r'\b(?:MSB|FOI|Vinnova|EU|OECD|WHO|NATO)\w*\s+(?:rapport|report|directive|framework|program)',
+         r'\b(?:\d{4}[:/]\d+|\d{4,5}|dnr\s*\d|FIPS\s*\d|ISO\s*\d|doi)'),
+    ]
+    text_for_cite = model.full_text
+    for vague_pat, specific_pat in vague_policy_patterns:
+        vague_hits = re.findall(vague_pat, text_for_cite, re.IGNORECASE)
+        for hit in vague_hits:
+            context_start = text_for_cite.lower().find(hit.lower())
+            if context_start >= 0:
+                window = text_for_cite[max(0, context_start - 20):context_start + len(hit) + 80]
+                if not re.search(specific_pat, window, re.IGNORECASE):
+                    result.add("Vague Policy Reference", "MEDIUM", 0,
+                        f"Policy reference '{hit[:60]}' lacks a specific document ID, number, or year.",
+                        "Add document number (e.g. 'MSB 2024, dnr 30143') or publication year to strengthen credibility.",
+                        cat, layer)
+                    break  # one finding per pattern is enough
 
 
 # ============================================================
@@ -4614,7 +4869,7 @@ def format_report(result: AnalysisResult, pdf_path: str, model: ProposalModel,
 
 def run_analysis(pdf_path: str, call_path: Optional[str] = None,
                  verbose: bool = False, budget_mode: bool = False,
-                 eic_pathfinder: bool = False):
+                 eic_pathfinder: bool = False, module_name: Optional[str] = None):
     pages, page_count = extract_text(pdf_path)
 
     if verbose:
@@ -4628,6 +4883,34 @@ def run_analysis(pdf_path: str, call_path: Optional[str] = None,
         print(f"  Anchor: lang={anchor.language}, country={anchor.country or '?'}, "
               f"region={anchor.region or '?'}, funder={anchor.funding_body or '?'}, "
               f"scale={doc_scale} ({anchor.page_count}p/{anchor.word_count}w)")
+
+    # Module auto-detection or manual selection
+    active_module = None
+    module_scores = None
+    if _HAS_MODULES:
+        registry = get_registry()
+        if module_name:
+            active_module = registry.get_by_name(module_name)
+            if not active_module and verbose:
+                print(f"  WARNING: Module '{module_name}' not found. Available: "
+                      f"{', '.join(registry.list_modules())}")
+        else:
+            active_module = registry.auto_detect(anchor)
+
+        if active_module:
+            if verbose:
+                print(f"  Module: {active_module.name} v{active_module.version} "
+                      f"— {active_module.description}")
+        else:
+            if verbose:
+                print("  Module: none matched (universal checks only)")
+                avail = registry.list_modules()
+                if avail:
+                    print(f"  Available: {', '.join(avail)}")
+            LoreLog.log_unknown(anchor, [
+                f"No module matched for lang={anchor.language}, "
+                f"funder={anchor.funding_body}, country={anchor.country}",
+            ])
 
     if verbose:
         print(model.summary())
@@ -4644,10 +4927,24 @@ def run_analysis(pdf_path: str, call_path: Optional[str] = None,
     if verbose:
         print("\n  Pass 2: Analysis...")
 
-    # Layer 1: Structural Integrity
+    # Layer 1: Structural Integrity (universal)
     if verbose:
-        print("  Layer 1: Structural Integrity...")
+        print("  Layer 1: Structural Integrity (universal)...")
     check_structural_integrity(model, result)
+
+    # Layer 1b: Module-specific structural checks
+    if active_module:
+        mod_checks = active_module.get_structural_checks()
+        if mod_checks and verbose:
+            print(f"  Layer 1b: Structural ({active_module.name})...")
+        for name, fn in mod_checks:
+            try:
+                fn(model, result)
+                if verbose:
+                    print(f"    + {name}")
+            except Exception as e:
+                if verbose:
+                    print(f"    x {name}: {e}")
 
     # Layer 2: Call Alignment
     if verbose:
@@ -4660,7 +4957,7 @@ def run_analysis(pdf_path: str, call_path: Optional[str] = None,
     check_field_awareness(model, result)
     smile_scores = check_smile_alignment(model, result)
 
-    # Layer 4: Anti-Patterns
+    # Layer 4: Anti-Patterns (universal)
     start = model.part_b_start_page
     detectors = [
         ("Placeholders", lambda: check_unfilled_placeholders(pages, result, start)),
@@ -4690,7 +4987,7 @@ def run_analysis(pdf_path: str, call_path: Optional[str] = None,
     ]
 
     if verbose:
-        print("  Layer 4: Anti-Patterns...")
+        print("  Layer 4: Anti-Patterns (universal)...")
     for name, fn in detectors:
         try:
             fn()
@@ -4699,6 +4996,20 @@ def run_analysis(pdf_path: str, call_path: Optional[str] = None,
         except Exception as e:
             if verbose:
                 print(f"    x {name}: {e}")
+
+    # Layer 4b: Module-specific anti-pattern detectors
+    if active_module:
+        mod_detectors = active_module.get_detectors()
+        if mod_detectors and verbose:
+            print(f"  Layer 4b: Anti-Patterns ({active_module.name})...")
+        for name, fn in mod_detectors:
+            try:
+                fn(pages, result, start, model)
+                if verbose:
+                    print(f"    + {name}")
+            except Exception as e:
+                if verbose:
+                    print(f"    x {name}: {e}")
 
     # Budget mode: additional budget-focused checks
     if budget_mode:
@@ -4727,6 +5038,12 @@ def run_analysis(pdf_path: str, call_path: Optional[str] = None,
             print("  Pass 3: EIC Pathfinder scoring...")
         eic_scores = score_eic_pathfinder(model, result)
 
+    # Module-specific scoring
+    if active_module:
+        if verbose:
+            print(f"  Pass 3m: {active_module.name} scoring...")
+        module_scores = active_module.score(model, result)
+
     if verbose:
         print("  Pass 3b: Strategic dimensions...")
     strategic_scores = score_strategic_dimensions(model, doc_scale)
@@ -4745,17 +5062,23 @@ def run_analysis(pdf_path: str, call_path: Optional[str] = None,
 
     return (result, model, smile_scores, pf_results, gap_scores, eic_scores,
             strategic_scores, future_scores, pestled_scores,
-            interop_scores, stress_scores, anchor)
+            interop_scores, stress_scores, anchor, active_module, module_scores)
 
 
 def main():
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     parser = argparse.ArgumentParser(
-        description="C.R.U.C.I.B.L.E. v5.1.0 — Full Horizon Europe proposal analyzer",
-        epilog="Two-pass: Extract → Analyze. Built on SMILE methodology. Impact first, data last.",
+        description=f"C.R.U.C.I.B.L.E. v{__version__} — Modular proposal analyzer",
+        epilog="Universal core + call-specific modules. Built on SMILE methodology.",
     )
-    parser.add_argument("pdf", help="Path to proposal PDF")
+    parser.add_argument("pdf", nargs="?", help="Path to proposal (PDF, DOCX, MD, or TXT)")
     parser.add_argument("--call", "-c", metavar="PATH",
                         help="Call/topic text file or PDF (enables Layer 2)")
+    parser.add_argument("--module", metavar="NAME",
+                        help="Force a specific module (e.g. vinnova, horizon-europe). "
+                             "Default: auto-detect from document.")
+    parser.add_argument("--list-modules", action="store_true",
+                        help="List available call-specific modules and exit")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Show extraction and analysis progress")
     parser.add_argument("--json", "-j", metavar="PATH",
@@ -4764,12 +5087,48 @@ def main():
                         help="Save text report to file")
     parser.add_argument("--budget", "-b", action="store_true",
                         help="Enable budget analysis mode (additional cost checks)")
-    parser.add_argument("--model", "-m", action="store_true",
+    parser.add_argument("--model", action="store_true",
                         help="Print the extracted ProposalModel and exit (debug)")
     parser.add_argument("--eic-pathfinder", "-e", action="store_true",
                         help="EIC Pathfinder Open mode: call-specific scoring + strategic dimensions")
+    parser.add_argument("--lore", action="store_true",
+                        help="Show unincorporated lore entries and exit")
 
     args = parser.parse_args()
+
+    # List modules
+    if args.list_modules:
+        print(f"\n  C.R.U.C.I.B.L.E. v{__version__} — Available Modules\n")
+        if _HAS_MODULES:
+            registry = get_registry()
+            for desc in registry.list_modules():
+                print(f"  • {desc}")
+        else:
+            print("  No modules directory found.")
+        print()
+        sys.exit(0)
+
+    # Show lore
+    if args.lore:
+        print(f"\n  C.R.U.C.I.B.L.E. v{__version__} — Unincorporated Lore\n")
+        if _HAS_MODULES:
+            entries = LoreLog.get_unincorporated()
+            if entries:
+                for e in entries:
+                    print(f"  [{e['timestamp'][:10]}] lang={e['language']}, "
+                          f"funder={e.get('funding_body', '?')}, "
+                          f"country={e.get('country', '?')}")
+                    for note in e.get('notes', []):
+                        print(f"    → {note}")
+            else:
+                print("  No unincorporated patterns.")
+        else:
+            print("  No modules directory found.")
+        print()
+        sys.exit(0)
+
+    if not args.pdf:
+        parser.error("pdf argument is required (unless using --list-modules or --lore)")
 
     if not Path(args.pdf).exists():
         print(f"ERROR: File not found: {args.pdf}")
@@ -4779,6 +5138,8 @@ def main():
     print(f"  Analyzing: {args.pdf}")
     if args.call:
         print(f"  Call text: {args.call}")
+    if args.module:
+        print(f"  Module: {args.module} (forced)")
     if args.budget:
         print("  Budget mode: enabled")
     if args.eic_pathfinder:
@@ -4786,8 +5147,10 @@ def main():
 
     (result, model, smile_scores, pf_results, gap_scores, eic_scores,
      strategic_scores, future_scores, pestled_scores,
-     interop_scores, stress_scores, anchor) = run_analysis(
-        args.pdf, args.call, args.verbose, args.budget, args.eic_pathfinder
+     interop_scores, stress_scores, anchor,
+     active_module, module_scores) = run_analysis(
+        args.pdf, args.call, args.verbose, args.budget,
+        args.eic_pathfinder, args.module
     )
 
     if args.model:
@@ -4800,6 +5163,13 @@ def main():
                            eic_scores, strategic_scores, future_scores,
                            pestled_scores, interop_scores, stress_scores,
                            gap_scores)
+
+    # Append module-specific scores to report
+    if active_module and module_scores:
+        mod_lines = active_module.format_scores(module_scores)
+        if mod_lines:
+            report += "\n".join(mod_lines) + "\n"
+
     print(report)
 
     if args.output:
@@ -4814,6 +5184,8 @@ def main():
             "file": str(args.pdf),
             "call_provided": bool(args.call),
             "budget_mode": args.budget,
+            "module": active_module.name if active_module else None,
+            "module_version": active_module.version if active_module else None,
             "pages": model.total_pages,
             "model": {
                 "acronym": model.acronym,
@@ -4839,12 +5211,17 @@ def main():
                 "kpi_count": len(model.kpis_found),
                 "budget_total": model.budget_total,
                 "budget_eu": model.budget_eu,
+                "tables_detected": model.tables_detected,
+                "tables_empty": model.tables_empty,
+                "wp_hours_total": model.wp_hours_total,
+                "person_hours_total": model.person_hours_total,
             },
             "scores": scores,
             "total": sum(scores.values()),
             "smile_coverage": smile_scores,
             "eic_pathfinder_scores": eic_scores,
             "strategic_dimensions": strategic_scores,
+            "module_scores": module_scores,
             "anchor": {
                 "language": anchor.language,
                 "country": anchor.country,

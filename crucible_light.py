@@ -50,11 +50,17 @@ from typing import Optional
 
 try:
     import fitz
+    _HAS_FITZ = True
 except ImportError:
-    print("ERROR: pymupdf required. Install with: pip install pymupdf")
-    sys.exit(1)
+    _HAS_FITZ = False
 
-__version__ = "1.1.0"
+try:
+    from docx import Document as DocxDocument
+    _HAS_DOCX = True
+except ImportError:
+    _HAS_DOCX = False
+
+__version__ = "1.2.0"
 
 # ============================================================
 # 8 CALL-SPECIFIC DIMENSIONS (the Light C.R.U.C.I.B.L.E.)
@@ -272,17 +278,48 @@ def _partner_count(text: str) -> int:
     return len(hits)
 
 
+_CHARS_PER_VIRTUAL_PAGE = 3000
+
+
+def _extract_text_any(file_path: str) -> tuple[str, int]:
+    """Extract full text + page count from PDF, DOCX, MD, or TXT.
+
+    Non-PDF formats approximate page count at ~3000 chars/page.
+    """
+    ext = Path(file_path).suffix.lower()
+    if ext == ".pdf":
+        if not _HAS_FITZ:
+            print("ERROR: pymupdf required for PDF. Install with: pip install pymupdf")
+            sys.exit(1)
+        doc = fitz.open(file_path)
+        full_text = ""
+        page_count = doc.page_count
+        for page in doc:
+            full_text += page.get_text() + "\n"
+        doc.close()
+        return full_text, page_count
+    elif ext == ".docx":
+        if not _HAS_DOCX:
+            print("ERROR: python-docx required for .docx. Install with: pip install python-docx")
+            sys.exit(1)
+        doc = DocxDocument(file_path)
+        parts = [p.text for p in doc.paragraphs]
+        for table in doc.tables:
+            for row in table.rows:
+                parts.append(" | ".join(c.text for c in row.cells))
+        text = "\n".join(parts)
+        return text, max(1, len(text) // _CHARS_PER_VIRTUAL_PAGE + 1)
+    else:
+        text = Path(file_path).read_text(encoding="utf-8")
+        return text, max(1, len(text) // _CHARS_PER_VIRTUAL_PAGE + 1)
+
+
 def score_document(pdf_path: str, call_text: str = "") -> dict:
     """Score a document against all 8 Light dimensions with independent logic.
 
     Each dimension uses its own signals so scores differ per document.
     """
-    doc = fitz.open(pdf_path)
-    full_text = ""
-    page_count = doc.page_count
-    for page in doc:
-        full_text += page.get_text() + "\n"
-    doc.close()
+    full_text, page_count = _extract_text_any(pdf_path)
 
     text_lower = full_text.lower()
     call_lower = call_text.lower() if call_text else ""
@@ -775,11 +812,12 @@ def format_report(scores: dict, pdf_path: str, call_provided: bool,
 # ============================================================
 
 def main():
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     parser = argparse.ArgumentParser(
         description="C.R.U.C.I.B.L.E. Light v1.0 — Call-specific quick-score engine",
         epilog="Frontloaded template exploration + 8-dimension scoring. Target: 10/10.",
     )
-    parser.add_argument("pdf", help="Path to proposal PDF")
+    parser.add_argument("pdf", help="Path to proposal (PDF, DOCX, MD, or TXT)")
     parser.add_argument("--call", "-c", metavar="PATH",
                         help="Call/topic text file (enables call alignment scoring)")
     parser.add_argument("--template", "-t", metavar="PATH",
