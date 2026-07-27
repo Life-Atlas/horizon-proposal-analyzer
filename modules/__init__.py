@@ -196,6 +196,8 @@ def get_registry() -> ModuleRegistry:
 def _load_builtin_modules():
     from modules.horizon_europe import HorizonEuropeModule
     from modules.vinnova import VinnovaModule
+    from modules.whitepaper import WhitepaperModule
 
     _registry.register(HorizonEuropeModule())
     _registry.register(VinnovaModule())
+    _registry.register(WhitepaperModule())

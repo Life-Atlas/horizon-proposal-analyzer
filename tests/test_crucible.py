@@ -23,13 +23,13 @@ from crucible import (
     run_analysis,
     estimate_scores,
     run_pre_flight,
-    score_pestled,
+    score_pesteled,
     score_eu_interop,
     score_stress_test,
-    format_pestled,
+    format_pesteled,
     format_eu_interop,
     format_stress_test,
-    PESTLED_DIMENSIONS,
+    PESTELED_DIMENSIONS,
     EU_INTEROP_LAYERS,
     STRESS_TEST,
     SMILE_PHASES,
@@ -217,10 +217,10 @@ class TestEdgeVerse:
 
 class TestPESTLED:
     def test_has_eight_dimensions(self):
-        assert len(PESTLED_DIMENSIONS) == 8
+        assert len(PESTELED_DIMENSIONS) == 8
 
     def test_dimensions_have_required_fields(self):
-        for key, dim in PESTLED_DIMENSIONS.items():
+        for key, dim in PESTELED_DIMENSIONS.items():
             assert "name" in dim
             assert "description" in dim
             assert "markers" in dim
@@ -228,14 +228,14 @@ class TestPESTLED:
             assert len(dim["markers"]) > 0
 
     def test_weights_sum_to_100(self):
-        total = sum(d["weight"] for d in PESTLED_DIMENSIONS.values())
+        total = sum(d["weight"] for d in PESTELED_DIMENSIONS.values())
         assert total == 100
 
     def test_score_returns_all_dimensions(self):
         m = ProposalModel()
         m.full_text = "government policy regulation market revenue cost community stakeholder ai edge drone sustainability gdpr compliance ethical transparency urban reconstruction"
-        scores = score_pestled(m)
-        for key in PESTLED_DIMENSIONS:
+        scores = score_pesteled(m)
+        for key in PESTELED_DIMENSIONS:
             assert key in scores
         assert "_weighted_avg" in scores
         assert "_coverage" in scores
@@ -243,7 +243,7 @@ class TestPESTLED:
     def test_score_range(self):
         m = ProposalModel()
         m.full_text = "test"
-        scores = score_pestled(m)
+        scores = score_pesteled(m)
         for key, val in scores.items():
             if not key.startswith("_"):
                 assert 1.0 <= val["score"] <= 5.0
@@ -251,15 +251,15 @@ class TestPESTLED:
     def test_format_returns_lines(self):
         m = ProposalModel()
         m.full_text = "government market community ai sustainability gdpr ethical urban"
-        scores = score_pestled(m)
-        lines = format_pestled(scores)
+        scores = score_pesteled(m)
+        lines = format_pesteled(scores)
         assert len(lines) > 0
-        assert any("PESTLE+D" in l for l in lines)
+        assert any("PESTELED" in l for l in lines)
 
 
 class TestEUInterop:
     def test_has_seven_layers(self):
-        assert len(EU_INTEROP_LAYERS) == 7
+        assert len(EU_INTEROP_LAYERS) == 8
 
     def test_layers_have_required_fields(self):
         for key, layer in EU_INTEROP_LAYERS.items():
