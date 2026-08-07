@@ -1223,9 +1223,13 @@ def _build_context(model: "ProposalModel") -> dict:
                     elif re.fullmatch(r"[Mm]|man|Man", cs):
                         m_cells += 1
                     else:
-                        if re.search(r",\s*[Kk]\s*$", cs):
+                        # Mallens CV-tabell ar LODRAT: raden ar
+                        # "Namn, och kon | Anna Andersson, kvinna". Cellen ar
+                        # alltsa hela varden, inte bara konsordet. Utan det har
+                        # gav en korrekt konsmarkt ansokan 0 av 4 pa jamstalldhet.
+                        if re.search(r",\s*(kvinna|k)\s*$", cs, re.I):
                             k_cells += 1
-                        elif re.search(r",\s*[Mm]\s*$", cs):
+                        elif re.search(r",\s*(man|m)\s*$", cs, re.I):
                             m_cells += 1
     ctx["gender_cells"] = {
         "K": k_cells, "M": m_cells,

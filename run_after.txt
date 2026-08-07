@@ -1,0 +1,604 @@
+
+============================================================================
+  C.R.U.C.I.B.L.E. v7.1.0
+  Consortia Review Under Controlled Interrogation
+  Before Live Evaluation
+============================================================================
+  File:        PROJEKTBESKRIVNING_v2.md
+  Pages:       7
+  Findings:    23
+  Call text:   provided
+
+  PROPOSAL SNAPSHOT
+  ------------------------------------------------------------------------
+  Acronym:       (not detected)
+  Duration:      (not detected)
+  Action type:   (not detected)
+  Call ID:       (not detected)
+  Partners:      0
+  Work packages: 0
+  Deliverables:  0
+  Milestones:    0
+  Citations:     0
+
+  PRE-FLIGHT CHECKLIST (10 gatekeepers)
+  ------------------------------------------------------------------------
+  [PASS] Q 1. Do you have the CALL TEXT loaded?
+  [PASS] Q 2. Is the PAGE COUNT within the call limit?
+  [????] Q 3. Does the proposal pass all 3 GATEKEEPERS?
+         EIC Pathfinder rejects outright if missing: (1) convincing long-term vision of radically n
+  [????] Q 4. Are TRL targets aligned with call specification?
+         EIC Pathfinder Open: starting TRL 2, exit TRL 3-4. Claiming TRL 5+ exits signals wrong cal
+  [????] Q 5. Is there a COORDINATOR with institutional credibility?
+         A 1-person startup coordinating EUR 3-4M is a near-fatal evaluator red flag. Universities 
+  [????] Q 6. Does the consortium have >=3 partners from >=3 eligible countries?
+         Horizon Europe minimum eligibility requirement. Fail = desk rejection.
+  [????] Q 7. Is the budget within call limits (EUR 1-4M for Pathfinder Open)?
+         Over EUR 4M = automatic rejection. Under EUR 1M signals insufficient ambition.
+  [FAIL] Q 8. Are there NAMED KEY PERSONNEL with relevant track records?
+         EIC evaluators check for named researchers with publication records. 'TBD' or 'to be hired
+  [????] Q 9. Is there a commitment letter from the coordinator?
+         Large-company coordinators need documented commitment. Without it, evaluators question whe
+  [FAIL] Q10. Are ALL outputs open-access (Pathfinder Open Science requirement)?
+         EIC Pathfinder explicitly requires open science practices: pre-prints, open data, open-sou
+
+  ~  8 item(s) need manual verification
+
+  STRATEGIC DIMENSIONS (beyond call criteria)
+  ------------------------------------------------------------------------
+  Innovation Depth         3.1/5.0  [########........]  (3/17 markers, weight 20%)
+  Time to Market           3.8/5.0  [###########.....]  (4/17 markers, weight 15%)
+  Partnership Strength     1.7/5.0  [##..............]  (1/17 markers, weight 15%)
+  Defensibility / Moat     1.0/5.0  [................]  (0/10 markers, weight 10%)
+  Market Size & Clarity    2.5/5.0  [######..........]  (1/8 markers, weight 10%)
+  Team Execution Capability 2.6/5.0  [######..........]  (2/15 markers, weight 10%)
+  EU Policy Alignment      1.0/5.0  [................]  (0/14 markers, weight 10%)
+  Wow Factor / Memorability 1.0/5.0  [................]  (0/6 markers, weight 10%)
+
+  STRATEGIC WEIGHTED AVG:  2.25 / 5.00
+
+  FUTURE TECH RADAR (scoring against where the world WILL BE)
+  ------------------------------------------------------------------------
+  x100 question: What happens when this is 100x cheaper/faster/smaller?
+
+  --- 3-YEAR HORIZON (2029) ---
+  Physical AI / Embodied Intelligence 3.2/5.0  [########........]  (3/16, w=15%)
+  Edge-Native / Local-First          2.0/5.0  [####............]  (1/12, w=12%)
+  Spatial Web / Web 4.0              1.0/5.0  [................]  (0/15, w=12%)
+  Small/Local Models + LQMs          1.0/5.0  [................]  (0/10, w=10%)
+  AI Agentic Stacks                  1.0/5.0  [................]  (0/13, w=10%)
+  Explainable + Understandable AI    1.0/5.0  [................]  (0/11, w=10%)
+  Open + Sovereign Infrastructure    1.0/5.0  [................]  (0/15, w=10%)
+  Actor-Network / Sociotechnical     1.0/5.0  [................]  (0/12, w=8%)
+  Security + Resilience by Design    2.3/5.0  [#####...........]  (2/19, w=8%)
+  Drone Economy + UAM                1.0/5.0  [................]  (0/11, w=8%)
+  HPC + Quantum Enablement           2.3/5.0  [#####...........]  (1/9, w=5%)
+  Post-Quantum / HNDL Protection     1.0/5.0  [................]  (0/7, w=5%)
+  3-YEAR HORIZON (2029) AVG: 1.55/5.0
+
+  --- 5-YEAR HORIZON (2031) ---
+  Federated Digital Twins            3.0/5.0  [########........]  (2/12, w=8%)
+  Autonomous Infrastructure Management 1.0/5.0  [................]  (0/12, w=7%)
+  Synthetic Data + Generative Worlds 1.0/5.0  [................]  (0/8, w=6%)
+  Regulation-as-Code / Machine-Readable Policy 1.0/5.0  [................]  (0/12, w=5%)
+  5-YEAR HORIZON (2031) AVG: 1.62/5.0
+
+  --- 10-YEAR HORIZON (2036) ---
+  Planetary-Scale Digital Twin       2.2/5.0  [####............]  (1/10, w=5%)
+  Ambient Intelligence / Invisible Computing 1.0/5.0  [................]  (0/7, w=4%)
+  Biological-Digital Convergence     1.0/5.0  [................]  (0/7, w=4%)
+  Post-Quantum Native Architecture   1.0/5.0  [................]  (0/8, w=3%)
+  10-YEAR HORIZON (2036) AVG: 1.38/5.0
+
+  OVERALL FUTURE READINESS:  1.54 / 5.00  [PRESENT-FOCUSED]
+  Weakest horizon: 10-YEAR HORIZON (2036) (1.38/5.0)
+
+  PESTELED REGIONAL ENVIRONMENT ANALYSIS
+  (Political · Environmental · Social · Technological · Economic · Legal · Ethical · Demographic)
+  ------------------------------------------------------------------------
+  Does the proposal understand its operating environment?
+
+  Political        2.1/5.0  [####............]  (3/32, w=15%)
+  Environmental    1.8/5.0  [###.............]  (2/29, w=10%)
+  Social           2.3/5.0  [#####...........]  (4/36, w=10%)
+  Technological    3.8/5.0  [###########.....]  (9/39, w=15%)
+  Economic         4.0/5.0  [############....]  (9/36, w=15%)
+  Legal            2.9/5.0  [#######.........]  (5/31, w=10%)
+  Ethical          1.7/5.0  [##..............]  (2/34, w=10%)
+  Demographic      2.3/5.0  [#####...........]  (3/28, w=15%)
+
+  PESTELED WEIGHTED AVG:  2.70 / 5.00  [GAPS DETECTED]
+  Weakest: Ethical (1.7/5.0)
+
+  EU INTEROPERABILITY FRAMEWORK (8-layer assessment)
+  ------------------------------------------------------------------------
+  Will this proposal's outputs plug into EU infrastructure?
+
+  Semantic Interoperability        1.4/5.0  [#...............]  (1/28, w=17%)
+  Security Interoperability        2.2/5.0  [####............]  (3/31, w=15%)
+  Technical Interoperability       2.3/5.0  [#####...........]  (2/19, w=13%)
+  Syntactic Interoperability       2.3/5.0  [#####...........]  (2/18, w=13%)
+  Legal Interoperability           2.7/5.0  [######..........]  (4/28, w=13%)
+  Contextual Interoperability      3.0/5.0  [########........]  (4/24, w=13%)
+  Organizational Interop           3.9/5.0  [###########.....]  (7/29, w=9%)
+  Social Interoperability          2.5/5.0  [######..........]  (4/31, w=7%)
+
+  EU INTEROP WEIGHTED AVG:  2.43 / 5.00  [INTEGRATION RISK]
+  Weakest: Semantic Interoperability (1.4/5.0)
+
+  CONCEPT / CONTEXT / CRISIS — TRIPLE STRESS TEST
+  ------------------------------------------------------------------------
+  Brutal honesty: does this survive scrutiny?
+
+  CONCEPT — Does the core idea hold?
+  AVG: 3.3/5.0  [###########.........]
+    C1 Is the core thesis falsifiable?                    3.3/5.0 [######......]
+    C2 Does it solve a problem people actually have?      3.3/5.0 [######......]
+    C3 Is there evidence it CAN work (not just should)?   3.3/5.0 [######......]
+    C4 What's the moat — why can't someone copy this?     3.0/5.0 [######......]
+    C5 Is the team the RIGHT team for this problem?       3.6/5.0 [#######.....]
+
+  CONTEXT — Does it fit the current environment?
+  AVG: 3.3/5.0  [###########.........]
+    X1 Is the timing right? (convergence)                 3.3/5.0 [######......]
+    X2 Does it align with EU/national strategic prioritie 3.5/5.0 [#######.....]
+    X3 Is the regulatory environment ready?               3.1/5.0 [######......]
+    X4 Is there real market pull (not just push)?         3.3/5.0 [######......]
+    X5 Does consortium map to problem geography?          3.1/5.0 [######......]
+
+  CRISIS — What happens when things go wrong?
+  AVG: 3.2/5.0  [##########..........]
+    R1 What if the primary approach fails?                3.3/5.0 [######......]
+    R2 What if a key partner drops out?                   3.0/5.0 [######......]
+    R3 What if the geopolitical context changes?          3.0/5.0 [######......]
+    R4 What if a competitor publishes first?              3.1/5.0 [######......]
+    R5 What if funding is cut or delayed?                 3.5/5.0 [#######.....]
+
+  STRESS TEST OVERALL:  3.26 / 5.00  [PARTIALLY RESILIENT]
+  Weakest lens: CRISIS (3.2/5.0)
+
+  PRESCRIPTIVE GAP ANALYSIS (evaluator perspective)
+  ------------------------------------------------------------------------
+  6 gap(s) identified  |  Score: 1.0/10.0  |  Critical: 1  High: 1  Medium: 4
+
+  [!!!] G1: Missing AIDA Opening Structure  (CRITICAL)
+         Section: Opening paragraph
+         Issue:   Opening has 1/3 AIDA elements. No shock/AS-IS. No promise/TO-BE. 
+         Fix:     Rewrite first paragraph: [SHOCK: quantified AS-IS problem] → [TRIGGER: external force making this urgent NOW] → [PROMISE
+         Why:     Evaluators form their impression in the first 30 seconds. A tech-first or methodology-first opening loses them immediate
+
+  [ ! ] G4: No Crisis Scenario  (HIGH)
+         Section: Impact / Potential
+         Issue:   No crisis, mobilization, or heightened-readiness scenario found anywhere in the proposal.
+         Fix:     Add at least one concrete scenario: 'If 20% of personnel are mobilized, the digital twin enables new operators to become
+         Why:     For defence/resilience calls, evaluators EXPECT worst-case scenario analysis. Without it, the proposal seems naive about
+
+  [ ~ ] G9: Weak AS-IS → TO-BE Quantification  (MEDIUM)
+         Section: Impact
+         Issue:   Only 1 quantified before/after pair(s). Strong proposals have 4-6 measurable deltas.
+         Fix:     Add more paired metrics: time saved, cost reduced, risk eliminated, coverage increased.
+         Why:     More quantified deltas = more convincing impact narrative.
+
+  [ ~ ] G6: Budget Missing Allocation Rationale  (MEDIUM)
+         Section: Budget
+         Issue:   Budget has role descriptions but no explicit % or hours allocation rationale.
+         Fix:     Add percentage breakdown with hours per partner.
+         Why:     Evaluators want to see the math: % budget ≈ % effort.
+
+  [ ~ ] G7: No Memorable Concept  (MEDIUM)
+         Section: Opening / Framework
+         Issue:   No coined concept or memorable term introduced in the first 5 pages. The proposal uses only standard terminology.
+         Fix:     Introduce ONE memorable concept that connects your approach to the call's language. Examples: 'total-digitalförsvar', 'R
+         Why:     Evaluators discuss proposals by shorthand. If your proposal has no memorable concept, it gets discussed as 'the digital 
+
+  [ ~ ] G8: Incomplete Adoption Funnel  (MEDIUM)
+         Section: Impact / Scaling
+         Issue:   Adoption path present but missing: reach number, evidence of existing interest.
+         Fix:     Add: reach number, evidence of existing interest.
+         Why:     Complete funnels convince evaluators the results won't sit on a shelf.
+
+  GAP SCORE:  1.0/10.0
+  VERDICT:  Major gaps — proposal is not evaluator-ready.
+
+  ========================================================================
+  CRUCIBLE COMPOSITE SCORE
+  2.43 / 5.00  [##########....................]  Grade: D
+    Strategic (25%):       2.25
+    Future Ready (15%):    1.54
+    PESTELED (20%):        2.70
+    EU Interop (25%):      2.43
+    Stress Test (15%):     3.26
+  ========================================================================
+
+  FOUR-LAYER ANALYSIS
+  ------------------------------------------------------------------------
+  Layer 1: Structural Integrity       5 findings (0 critical, 2 high)
+  Layer 2: Call Alignment             1 findings (0 critical, 1 high)
+  Layer 3: Field & SMILE             12 findings (0 critical, 3 high)
+  Layer 4: Anti-Patterns              5 findings (1 critical, 3 high)
+
+  ESTIMATED SCORE  (base 3.0 + bonuses - penalties, range 1.0-5.0)
+  ------------------------------------------------------------------------
+  Excellence       1.0/5.0  [....................]  WEAK
+  Impact           3.0/5.0  [##########..........]  OK
+  Implementation   3.0/5.0  [##########..........]  OK
+  TOTAL            7.0/15.0
+  Threshold:      AT RISK
+
+  SMILE METHODOLOGY COVERAGE
+  ------------------------------------------------------------------------
+  Reality Emulation              0%  [....................]  GAP
+  Concurrent Engineering         5%  [....................]  GAP
+  Collective Intelligence       14%  [##..................]  GAP
+  Contextual Intelligence        2%  [....................]  GAP
+  Continuous Intelligence        0%  [....................]  GAP
+  Perpetual Wisdom               0%  [....................]  GAP
+
+  SEVERITY SUMMARY
+  ------------------------------------------------------------------------
+  !! CRITICAL     1
+  !  HIGH         9
+  ~  MEDIUM       9
+     LOW          4
+
+  TOP ISSUES
+  ------------------------------------------------------------------------
+  [  1x] Partners Not Detected
+  [  1x] Ethics Self-Assessment Not Detected
+  [  1x] Vague Policy Reference
+  [  1x] Formellt krav ej styrkt F6: Projektledare anställd hos koordinerande part
+  [  1x] Könsfördelningen vilar på ej namngivna personer
+  [  1x] Call Terminology Gap
+  [  1x] No Detectable Citations
+  [  1x] Prior Art Blindness
+  [  1x] No Forward Vision
+  [  1x] SMILE Gap: Reality Emulation
+  [  1x] SMILE Gap: Concurrent Engineering
+  [  1x] SMILE Gap: Collective Intelligence
+  [  1x] SMILE Gap: Contextual Intelligence
+  [  1x] SMILE Gap: Continuous Intelligence
+  [  1x] SMILE Gap: Perpetual Wisdom
+
+============================================================================
+  FINDINGS BY LAYER
+============================================================================
+
+  === LAYER 1: STRUCTURAL INTEGRITY ===
+
+  --- HIGH ---
+  [Partners Not Detected] (global)
+    Could not extract partner list from the document.
+    -> Ensure Part A administrative forms are included in the submitted PDF.
+
+  [Formellt krav ej styrkt F6: Projektledare anställd hos koordinerande part] (global)
+    Projektledare och koordinator nämns båda, men anställningen hos koordinerande part är inte uttryckligen intygad i texten. — KRAV: Att projektledaren är anställd hos den koordinerande parten i projektet.
+    -> Skriv ut uppgiften explicit i ansökan så att bedömaren kan verifiera den utan att gissa.
+
+  --- MEDIUM ---
+  [Vague Policy Reference] (global)
+    Policy reference 'Vinnovas program' lacks a specific document ID, number, or year.
+    -> Add document number (e.g. 'MSB 2024, dnr 30143') or publication year to strengthen credibility.
+
+  [Könsfördelningen vilar på ej namngivna personer] (global)
+    1 kvinnor och 0 män är könsmärkta i TABELL 4, men 1 av dem är platshållare utan namn.
+    -> En könsmärkning på en person som ännu inte finns är en bemanningsavsikt, inte en könsfördelning. Namnge personerna före inlämning.
+
+  --- LOW ---
+  [Ethics Self-Assessment Not Detected] (global)
+    Could not find ethics self-assessment flags in Part A.
+    -> Ensure ethics self-assessment form is complete; incomplete forms trigger Agency review.
+
+
+  === LAYER 2: CALL ALIGNMENT ===
+
+  --- HIGH ---
+  [Call Terminology Gap] (global)
+    Call uses 551 domain terms not in proposal: adresseras, affärs, affärsidéer, aktiebolag, aktiekapital, aktiviteter, aktiviteterna, aktörkonstellationens
+    -> Mirror the call's language — evaluators match your text to call requirements.
+
+
+  === LAYER 3: FIELD & SMILE ===
+
+  --- HIGH ---
+  [No Detectable Citations] (global)
+    Could not detect any year-based citations in the proposal.
+    -> Include properly formatted citations with years.
+
+  [Prior Art Blindness] (global)
+    No references to prior EU-funded projects in the same domain.
+    -> Show awareness of what's been funded before and what gap remains.
+
+  [SMILE Violation: Data First] (p.1)
+    Opening text is technology-first (3 tech terms vs 0 impact terms).
+    -> SMILE principle: Impact first, data last. Lead with the problem, not the solution.
+
+  --- MEDIUM ---
+  [No Forward Vision] (global)
+    Proposal lacks forward-looking positioning (roadmap, post-project evolution).
+    -> Show where the field is heading and how this project positions for it.
+
+  [SMILE Gap: Reality Emulation] (global)
+    Phase 'Reality Emulation' coverage: 0% (keyword: 0%, structural: 0%). Does the proposal define the reality it operates in? Stakeholders, boundaries, spatial-temporal context?
+    -> Key question: What is the starting point and boundary of your sociotechnological ecosystem?
+
+  [SMILE Gap: Concurrent Engineering] (global)
+    Phase 'Concurrent Engineering' coverage: 5% (keyword: 10%, structural: 0%). Does the proposal define what 'good enough' looks like before scaling? Is there a validation step?
+    -> Key question: What does the Minimal Viable Twin look like?
+
+  [SMILE Gap: Collective Intelligence] (global)
+    Phase 'Collective Intelligence' coverage: 14% (keyword: 19%, structural: 9%). Are specific standards/ontologies NAMED (not just mentioned)?
+    -> Key question: How does the system connect to physical reality and meet initial KPIs?
+
+  [SMILE Gap: Contextual Intelligence] (global)
+    Phase 'Contextual Intelligence' coverage: 2% (keyword: 5%, structural: 0%). Are specific decision support outputs defined (not just 'a dashboard')?
+    -> Key question: Can the system make real-time decisions with context?
+
+  [SMILE Gap: Continuous Intelligence] (global)
+    Phase 'Continuous Intelligence' coverage: 0% (keyword: 0%, structural: 0%). Is there an AI maturity path described (not just 'we will use ML')?
+    -> Key question: Does the system learn and prescribe, not just predict?
+
+  [SMILE Gap: Perpetual Wisdom] (global)
+    Phase 'Perpetual Wisdom' coverage: 0% (keyword: 0%, structural: 0%). Is there a concrete open-source/sustainability/replication plan?
+    -> Key question: How does impact scale beyond the project?
+
+  --- LOW ---
+  [SMILE Perspective Gap: From People] (global)
+    Weak coverage of 'From People' perspective (0/13 markers).
+    -> SMILE requires People + Systems + Planet perspectives.
+
+  [SMILE Perspective Gap: From Planet] (global)
+    Weak coverage of 'From Planet' perspective (1/11 markers).
+    -> SMILE requires People + Systems + Planet perspectives.
+
+
+  === LAYER 4: ANTI-PATTERNS ===
+
+  --- CRITICAL ---
+  [Overifierade uppgifter kvar i texten] (global)
+    1 markering(ar) om uppgifter som ännu inte är verifierade, t.ex.: "** Intermediärer får en gemensam prövad metod för att avgöra **när** en kunskapsintensiv idé ska verifieras, **mot vilken verklighet** och *".
+    -> Verifiera eller ta bort. En felaktig uppgift i en ansökan till en myndighet är en oriktig uppgift, inte ett utkast.
+
+  --- HIGH ---
+  [Phantom Baseline] (p.1)
+    KPI '<50 %' stated without a cited baseline.
+    -> Every KPI: metric + SotA value (cited) + target + measurement method.
+
+  [Missing Theory of Change] (p.1)
+    Impact section lacks a clear logic chain. Found: . Missing: activities, outputs, outcomes, impacts.
+    -> Add an explicit Theory of Change: Activities → Outputs → Outcomes → Impacts. Evaluators look for this causal chain in Section 2.
+
+  [Missing Gender Dimension] (p.1)
+    No mention of gender in the proposal. Since 2021, all Horizon Europe proposals must address the gender dimension in research content AND team composition.
+    -> Add: (1) gender balance in team/governance, (2) sex/gender analysis in research design, (3) reference your institution's Gender Equality Plan (GEP). This is a scored cross-cutting priority.
+
+  --- LOW ---
+  [AI Tool Disclosure Missing] (global)
+    Proposal uses AI/ML as a topic but does not disclose AI tool usage in writing.
+    -> HE now requires disclosure if AI tools were used in preparing the proposal text.
+
+============================================================================
+  PRE-SUBMISSION CHECKLIST
+============================================================================
+  [ ] STRUCTURAL: ≥3 partners from ≥3 eligible countries confirmed
+  [ ] STRUCTURAL: All WP end months within project duration
+  [ ] STRUCTURAL: Every deliverable ID in text also in deliverable table
+  [ ] STRUCTURAL: No milestones that are meetings/workshops
+  [ ] STRUCTURAL: No partner with zero PMs leads tasks
+  [ ] STRUCTURAL: Subcontracting <30% of total budget (or justified)
+  [ ] STRUCTURAL: Management WP 5-10% of total effort
+  [ ] STRUCTURAL: Abstract has problem/solution/impact structure (1500-2000 chars)
+  [ ] STRUCTURAL: Gender balance in named researchers checked
+  [ ] STRUCTURAL: Ethics self-assessment complete
+  [ ] CALL: Every expected outcome bullet maps to ≥1 deliverable
+  [ ] CALL: Call terminology mirrored (not paraphrased)
+  [ ] CALL: TRL targets align with call specification
+  [ ] CALL: Action type (RIA/IA/CSA) consistent with TRL targets
+  [ ] CALL: Referenced EU policies match call text
+  [ ] FIELD: ≥30% citations from last 2 years
+  [ ] FIELD: Seminal/foundational work cited (pre-2020)
+  [ ] FIELD: Prior EU-funded projects referenced
+  [ ] FIELD: Specific standards bodies named (ISO/IEEE/W3C/ETSI)
+  [ ] FIELD: Forward vision present (roadmap, post-project, 2030+)
+  [ ] SMILE: Impact first, data last — opening leads with problem
+  [ ] SMILE: All 6 phases addressed (Reality→Wisdom)
+  [ ] SMILE: Three perspectives covered (People/Systems/Planet)
+  [ ] SMILE: Stakeholder table/matrix present (Reality Emulation)
+  [ ] SMILE: Validation methodology defined (Concurrent Engineering)
+  [ ] SMILE: Specific ontologies/standards named (Collective Intelligence)
+  [ ] SMILE: Decision support outputs defined (Contextual Intelligence)
+  [ ] SMILE: AI maturity path described (Continuous Intelligence)
+  [ ] SMILE: Open source/sustainability plan (Perpetual Wisdom)
+  [ ] ANTI: All placeholders removed ([TBD], [insert], [XX])
+  [ ] ANTI: Every KPI has a cited baseline + measurement method
+  [ ] ANTI: Each partner has ≥1 paragraph with profile + personnel
+  [ ] ANTI: WPs structured by objective, not by partner territory
+  [ ] ANTI: Risk table covers technical + management + market risks
+  [ ] ANTI: Outputs ≠ outcomes ≠ impacts (defined separately)
+  [ ] ANTI: Exploitation names partner + product + market + revenue model
+  [ ] ANTI: Dissemination and exploitation treated separately
+  [ ] ANTI: Governance has conflict resolution + IP escalation path
+  [ ] ANTI: Commercial competitors named in SotA section
+  [ ] ANTI: No time-travel deliverables (integration before components)
+  [ ] ANTI: Page limit checked: 40 for RIA/IA, 25 for CSA
+  [ ] ANTI: Acronym list complete, all defined at first use
+  [ ] ANTI: AI tool usage disclosed if AI used in writing
+  [ ] BUDGET: Personnel cost per PM within country benchmarks
+  [ ] FINAL: Spellcheck + read by non-author reviewer
+
+  ==============================================================================
+  VINNOVA 2026-01401 — EKOSYSTEMINSATS V&V (3 kriterier / 7 underkriterier, skala 0-10)
+  ==============================================================================
+
+  FORMELLA KRAV — brott mot dessa ger direkt avslag
+  ------------------------------------------------------------------------------
+  [PASS ] F1  Bidragstak 500 000 kr
+           Sökt bidrag 499 960 kr ≤ taket 500 000 kr (källa: TABELL 2,
+           summarad, kolumn 'Sökt bidrag'). Summaraden stämmer med AP-raderna
+           (499 960 kr). Löptexten anger 499 960 kr — samstämmigt med
+           tabellen.
+  [PASS ] F2  Projekttid max 3 månader
+           Angiven projekttid: 3 månader. Beräknat ur datumintervallet
+           2026-10-26 – 2027-01-26: 3 månader.
+  [PASS ] F3  Projektfönster 2026-10-20 .. 2027-01-31
+           Startdatum 2026-10-26 inom fönstret. Slutdatum 2027-01-26 inom
+           fönstret.
+  [PASS ] F4  Konsult/licens max 20 % av en organisations budget
+           Angiven andel per organisation: 19.79 %. TABELL 2 ger 188 000 kr
+           av 974 960 kr = 19.28 % av projektets totala kostnad.
+  [PASS ] F5  Indirekta kostnader max 30 % av lönekostnader
+           TABELL 2: indirekta 171 750 kr mot lönekostnader 572 500 kr =
+           30.00 %. Angivet påslag i löptext: 30 %.
+  [WARN ] F6  Projektledare anställd hos koordinerande part
+           Projektledare och koordinator nämns båda, men anställningen hos
+           koordinerande part är inte uttryckligen intygad i texten.
+  [PASS ] F7  Koordinerande part = svensk juridisk person
+           Koordinerande part utpekad med svensk anknytning.
+  [PASS ] F8  Alla parter juridiska personer
+           Inga enskilda firmor eller fysiska personer utpekade som part.
+  [?    ] F9  Uteslutna aktörer
+           Ingen av de uteslutande utlysningarna nämns. Måste verifieras mot
+           parternas faktiska bidragshistorik.
+  [?    ] F10  Köp mellan projektparter
+           Inga transaktioner mellan parter beskrivna.
+  [PASS ] F11  Bilagor
+           De minimis nämns — intyg om stöd av mindre betydelse krävs och
+           inga otillåtna bilagor refereras.
+  [?    ] F12  Projektbeskrivning max 7 sidor, 11 punkter
+           Indata är text/markdown — sidräkningen är virtuell och kan inte
+           avgöra sidantalet. Uppskattning utifrån 19 818 tecken: ~6 sidor
+           vid 11 pt. Kontrollera i den färdiga docx/pdf-filen.
+  [PASS ] F13  Projektsammanfattning max 1500 tecken
+           Sammanfattningen är 996 tecken.
+
+  BEDÖMNINGSKRITERIER
+  ------------------------------------------------------------------------------
+  Potential          10.0 / 10.0   (vikt 40 %)  [####################]
+  Aktörer            10.0 / 10.0   (vikt 25 %)  [####################]
+  Genomförbarhet      8.6 / 10.0   (vikt 35 %)  [#################...]
+  ------------------------------------------------------------------------------
+  COMPOSITE           9.5 / 10.0   (40/25/35)
+
+  UNDERKRITERIER — här tappas poängen
+  ------------------------------------------------------------------------------
+
+  [P1] 10.0 / 10.0  (potential, vikt 40 % inom kriteriet)
+        Nytänkande i relation till existerande processer och modeller i att
+        öka kvalitet och kapacitet för verifiering och validering hos aktörer
+        av kunskapsintensiva idéer
+         2.50/2.50   Kontrast mot befintliga processer och modeller
+                     9 kontrastmarkörer mot befintliga processer, 37
+                     process/modell-omnämnanden
+         2.00/2.00   Namngivna befintliga modeller/standarder att jämföra mot
+                     namngivna befintliga modeller/standarder: trl, mim, eif,
+                     iso
+         2.00/2.00   Kvalitet OCH kapacitet adresseras
+                     kvalitet x2, kapacitet x3 (utlysningen kräver BÅDA)
+         1.50/1.50   Utlysningens terminologi används
+                     27/27 av utlysningens termer i brödtext
+         2.00/2.00   Mallfrågor för nytänkande (M2.4, M3.2)
+                     mallfrågor besvarade 2/2
+
+  [P2] 10.0 / 10.0  (potential, vikt 35 % inom kriteriet)
+        Trovärdighet i analysen av problembilden och de resultat den
+        föreslagna lösningen förväntas åstadkomma
+         1.50/1.50   Källhänvisningar
+                     3 formella källhänvisningar (författare/årtal), 8
+                     attributioner i löptext (enligt/källa/studie/rapport)
+         2.50/2.50   Kvantifiering och före/efter-par
+                     16 kvantifierade uttryck, 6 före/efter-par (0 i löptext, 6
+                     i tabellform; 6 rader i tabell 'Nuläge' → 'Målvärde efter
+                     pilot')
+         2.00/2.00   Metod för primärdata
+                     metoder för primärdata: intervju, enkät, datainsamling,
+                     kartläggning
+         1.50/1.50   Uttalade hypoteser
+                     6 omnämnanden av hypotes
+         2.50/2.50   Mallfrågor för problembild och resultat (M1.1, M2.1, M2.2, M2.3, M2.5, M4.2, M6.2)
+                     mallfrågor besvarade 7/7
+
+  [P3] 10.0 / 10.0  (potential, vikt 25 % inom kriteriet)
+        Bidrag till ökad jämställdhet genom att integrera perspektiv kring kön
+        och genus
+         4.00/4.00   Djup i jämställdhetsresonemanget (ordstammar i brödtext)
+                     jämställ x5, kvinn x11, genus x1, könsfördelning x2
+                     (brödtext, ordstammar)
+         3.00/3.00   Koppling till kvinnliga idébärare/företagsledare
+                     uttrycklig koppling kvinnor <-> idébärare/företagsledare
+         3.00/3.00   Mallfrågor för jämställdhet (M2.6, M2.7)
+                     mallfrågor besvarade 2/2
+
+  [A1] 10.0 / 10.0  (aktörer, vikt 45 % inom kriteriet)
+        Projektledarens och andra nyckelpersoners förutsättningar att leda och
+        genomföra projektet
+         3.50/3.50   Namngiven projektledare och nyckelpersoner
+                     projektledare utpekad: ja; 5 namngivna personer med roll
+         4.00/4.00   TABELL 4 — CV per nyckelperson
+                     TABELL 4 (CV per nyckelperson): finns (4/6
+                     kolumnetiketter)
+         2.50/2.50   Omfattning i timmar per person
+                     9 tidsangivelser i timmar — TABELL 2 'Tid (h)': 4 rader
+                     (summa 527 h), TABELL 4 'Omf. (h)': 1 personer, löptext: 4
+                     (mallen kräver omfattning per person)
+
+  [A2] 10.0 / 10.0  (aktörer, vikt 55 % inom kriteriet)
+        Aktörskonstellationens sammansättning, deltagande, kompetens och
+        förmåga att bidra till projektmål och genomförande
+         2.50/2.50   Aktörstyp inom utlysningens målgrupp
+                     aktörstyper ur utlysningens målgrupp: forskningsinstitut,
+                     regional innovationsplattform, innovationsplattform,
+                     forsknings- och innovationsinfrastruktur,
+                     innovationsinfrastruktur, test- och demomiljö, testbädd,
+                     demomiljö, science park, innovationshubb,
+                     innovationskluster, kluster, intermediär
+         2.50/2.50   Namngivna juridiska personer som parter
+                     4 namngivna organisationer med juridisk-person-form
+         2.00/2.00   Kompetens och erfarenhet beskriven
+                     kompetens x3, erfarenhet x3
+         3.00/3.00   Mallfrågor för team och organisation (M7.1, M7.2)
+                     mallfrågor besvarade 2/2
+
+  [G1] 10.0 / 10.0  (genomförbarhet, vikt 65 % inom kriteriet)
+        Förutsättningar för att projektets resultat tas vidare och kommer till
+        användning efter projektets slut
+         2.00/2.00   Överföring/generalisering/förvaltning (ordstammar)
+                     ordstammar för vidareanvändning: överförx5, implementerx4,
+                     förvaltx5, spridx1, efter projektslutx2, återanvändx1,
+                     mottagarex8, licensx4
+         2.00/2.00   Uttrycklig beskrivning av tiden efter projektslut
+                     uttrycklig beskrivning av vad som händer efter projektslut
+         2.00/2.00   TABELL 1-3 finns
+                     TABELL 1 OK, TABELL 2 OK, TABELL 3 OK
+         1.00/1.00   Risker poängsatta 1-5
+                     5 riskrader med både sannolikhet och konsekvens som siffra
+                     1-5
+         3.00/3.00   Mallfrågor för genomförande och nyttiggörande (M3.1, M3.3, M3.4, M3.5, M4.1, M5.1, M5.2, M5.4, M5.5, M6.1, M6.3)
+                     mallfrågor besvarade 11/11
+
+  [G2]  6.0 / 10.0  (genomförbarhet, vikt 35 % inom kriteriet)
+        Könsfördelning i projektteamet och perspektiv kring kön och genus
+        integrerat i projektplanen
+         0.00/4.00   Uppmätt könsfördelning i teamet
+                     1 kvinnor, 0 män av 1 nyckelpersoner i TABELL 4
+                     (balansmått 0.00); 1 av dem är ej namngivna (platshållare
+                     i hakparentes)
+         3.00/3.00   Jämställdhet inuti projektplanen
+                     3 jämställdhetsomnämnanden inuti
+                     projektplan/arbetspaket-kontext
+         3.00/3.00   Mallfrågor för kön/genus i plan och team (M5.3, M7.3, M7.4)
+                     mallfrågor besvarade 3/3
+
+  PROJEKTBESKRIVNINGSMALLEN — 27/27 obligatoriska frågor besvarade
+  ------------------------------------------------------------------------------
+  Alla obligatoriska frågor är besvarade.
+
+  MALLENS FYRA TABELLER
+  ------------------------------------------------------------------------------
+  [OK  ] TABELL 1  AP | aktivitet och konkret resultat | kostnad
+  [OK  ] TABELL 2  AP | tidsperiod | personer | kostnadsslag | bidrag
+  [OK  ] TABELL 3  risk | sannolikhet 1-5 | konsekvens 1-5 | åtgärd
+  [OK  ] TABELL 4  CV per nyckelperson (namn och kön, roll, timmar)
+
+  UTLYSNINGENS TERMINOLOGI — 27/27 termer i brödtext
+  ------------------------------------------------------------------------------
+  Full täckning.
+
