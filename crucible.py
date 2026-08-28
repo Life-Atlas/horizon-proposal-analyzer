@@ -1925,7 +1925,19 @@ def _extract_from_pdf(path: str) -> tuple[dict, int]:
     doc = fitz.open(path)
     pages = {}
     for i in range(len(doc)):
-        pages[i + 1] = doc[i].get_text()
+        txt = doc[i].get_text()
+        # Tables: a PDF built from a Word template loses the cell boundaries that the
+        # .docx path preserves ("cell | cell"), so the table detectors never fire.
+        # Re-emit every detected table as pipe-separated rows, appended to the page text.
+        try:
+            for tab in doc[i].find_tables().tables:
+                for row in tab.extract():
+                    celler = [(c or "").replace("\n", " ").strip() for c in row]
+                    if any(celler):
+                        txt += "\n" + " | ".join(celler)
+        except Exception:
+            pass
+        pages[i + 1] = txt
     return pages, len(doc)
 
 
